@@ -50,6 +50,7 @@ npm start
 - `APP_URL=https://martis.pro` или домен VDS.
 - `HOST=127.0.0.1` и `PORT=3000` для работы за Nginx.
 - `DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`.
+- `DB_CONNECTION=mysql` для VDS/MySQL.
 - `ADMIN_LOGIN` и `ADMIN_PASSWORD_HASH`.
 - `TELEGRAM_BOT_TOKEN`.
 - `TELEGRAM_WEBHOOK_SECRET` - длинная случайная строка.
@@ -62,6 +63,16 @@ npm start
 ```bash
 npm run hash-password -- "новый-пароль"
 ```
+
+## Локальная проверка без MySQL
+
+Чтобы не трогать параллельно запущенный MySQL на компьютере, можно поднять админку и webhook на отдельной SQLite-базе:
+
+```bash
+npm run local
+```
+
+Локальный адрес: `http://127.0.0.1:4199/`. Файл базы создаётся в `node-backend/data/local.sqlite` и не попадает в Git. Этот режим нужен только для разработки; на VDS оставляем `.env` с `DB_CONNECTION=mysql`.
 
 ## Nginx reverse proxy
 

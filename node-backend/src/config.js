@@ -13,6 +13,7 @@ export const config = {
   appUrl: String(env('APP_URL', 'http://127.0.0.1:3000')).replace(/\/+$/, ''),
   timezone: String(env('APP_TIMEZONE', 'Europe/Moscow')),
   db: {
+    connection: String(env('DB_CONNECTION', 'mysql')),
     host: String(env('DB_HOST', '127.0.0.1')),
     port: Number(env('DB_PORT', 3306)),
     database: String(env('DB_DATABASE', '')),

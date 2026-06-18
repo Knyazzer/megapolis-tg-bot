@@ -1,5 +1,5 @@
 import { config } from '../config.js';
-import { execute, query, queryOne, withTransaction } from '../db/mysql.js';
+import { execute, isSqlite, query, queryOne, withTransaction } from '../db/mysql.js';
 import {
   eventFormatLabel,
   eventSupportsOffline,
@@ -394,7 +394,7 @@ export class AdminController {
       );
       for (const recipient of recipients) {
         await tx.execute(
-          `INSERT IGNORE INTO broadcast_messages
+          `${isSqlite() ? 'INSERT OR IGNORE' : 'INSERT IGNORE'} INTO broadcast_messages
            (campaign_id, person_id, telegram_id, status, created_at, updated_at)
            VALUES (:campaignId, :personId, :telegramId, 'queued', :now, :now)`,
           {

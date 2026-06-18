@@ -11,3 +11,4 @@ storage/uploads/*
 node-backend/.env
 node-backend/node_modules/
 node-backend/logs/
+node-backend/data/

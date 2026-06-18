@@ -1,4 +1,4 @@
-import { query } from '../db/mysql.js';
+import { isSqlite, query } from '../db/mysql.js';
 import { formatSqlDate, nowSql, parseDate, shiftDate } from '../utils/dates.js';
 
 const OFFLINE_TYPES = ['offline_1day', 'offline_2hours', 'offline_started'];
@@ -39,6 +39,30 @@ export class ReminderPlanner {
     }
 
     const now = nowSql();
+    if (isSqlite()) {
+      await query(
+        `INSERT INTO scheduled_messages
+          (registration_id, person_id, event_id, type, send_at, payload, created_at, updated_at)
+         VALUES
+          (:registrationId, :personId, :eventId, :type, :sendAt, NULL, :now, :now)
+         ON CONFLICT(registration_id, type) DO UPDATE SET
+          send_at = excluded.send_at,
+          sent_at = NULL,
+          failed_at = NULL,
+          error = NULL,
+          updated_at = excluded.updated_at`,
+        {
+          registrationId: registration.id,
+          personId: registration.person_id,
+          eventId: event.event_id || event.id,
+          type,
+          sendAt: formatSqlDate(sendAt),
+          now,
+        },
+      );
+      return;
+    }
+
     await query(
       `INSERT INTO scheduled_messages
         (registration_id, person_id, event_id, type, send_at, payload, created_at, updated_at)
@@ -53,7 +77,7 @@ export class ReminderPlanner {
       {
         registrationId: registration.id,
         personId: registration.person_id,
-        eventId: event.id || event.event_id,
+        eventId: event.event_id || event.id,
         type,
         sendAt: formatSqlDate(sendAt),
         now,

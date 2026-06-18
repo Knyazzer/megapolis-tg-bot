@@ -1,4 +1,4 @@
-import { query, queryOne } from '../db/mysql.js';
+import { isSqlite, query, queryOne } from '../db/mysql.js';
 import { nowSql } from '../utils/dates.js';
 
 const REGISTRATION_FIELDS = [
@@ -25,6 +25,30 @@ export class RegistrationsRepository {
 
   async upsert(personId, eventId, attendance, status) {
     const now = nowSql();
+    if (isSqlite()) {
+      await query(
+        `INSERT INTO registrations
+          (person_id, event_id, attendance, status, approved_at, created_at, updated_at)
+         VALUES
+          (:personId, :eventId, :attendance, :status, :approvedAt, :now, :now)
+         ON CONFLICT(person_id, event_id) DO UPDATE SET
+          attendance = excluded.attendance,
+          status = excluded.status,
+          approved_at = excluded.approved_at,
+          updated_at = excluded.updated_at`,
+        {
+          personId,
+          eventId,
+          attendance,
+          status,
+          approvedAt: status === 'approved' ? now : null,
+          now,
+        },
+      );
+
+      return this.findByPersonEvent(personId, eventId);
+    }
+
     await query(
       `INSERT INTO registrations
         (person_id, event_id, attendance, status, approved_at, created_at, updated_at)

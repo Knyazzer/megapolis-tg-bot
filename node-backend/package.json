@@ -8,6 +8,8 @@
   },
   "scripts": {
     "start": "node src/server.js",
+    "local": "NODE_ENV=development HOST=127.0.0.1 PORT=4199 APP_URL=http://127.0.0.1:4199 DB_CONNECTION=sqlite DB_DATABASE=./data/local.sqlite TELEGRAM_DRY_RUN=true TELEGRAM_WEBHOOK_SECRET=test node src/server.js",
+    "local:watch": "NODE_ENV=development HOST=127.0.0.1 PORT=4199 APP_URL=http://127.0.0.1:4199 DB_CONNECTION=sqlite DB_DATABASE=./data/local.sqlite TELEGRAM_DRY_RUN=true TELEGRAM_WEBHOOK_SECRET=test node --watch src/server.js",
     "dev": "node --watch src/server.js",
     "worker": "node src/worker.js",
     "worker:loop": "node src/worker.js --loop",
