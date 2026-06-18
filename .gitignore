@@ -1,0 +1,13 @@
+.env
+.DS_Store
+*.zip
+hosting_upload_*/
+martis_pro_upload_contents*/
+storage/*.sqlite
+storage/*.db
+storage/logs/*.log
+storage/uploads/*
+!.gitkeep
+node-backend/.env
+node-backend/node_modules/
+node-backend/logs/

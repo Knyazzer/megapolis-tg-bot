@@ -1,0 +1,19 @@
+{
+  "name": "megapolis-event-bot-node",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "worker": "node src/worker.js",
+    "worker:loop": "node src/worker.js --loop",
+    "check": "node scripts/check-syntax.js"
+  },
+  "dependencies": {
+    "mysql2": "^3.11.5"
+  }
+}
