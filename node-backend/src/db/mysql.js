@@ -215,6 +215,7 @@ function ensureSqliteSchema(database) {
       facecast_url TEXT NULL,
       rejection_reason TEXT NULL,
       approved_at TEXT NULL,
+      archived_at TEXT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       UNIQUE (person_id, event_id),
@@ -279,6 +280,9 @@ function ensureSqliteSchema(database) {
     );
   `);
 
+  ensureSqliteColumn(database, 'registrations', 'archived_at', 'TEXT NULL');
+  database.exec('CREATE INDEX IF NOT EXISTS idx_registrations_archived ON registrations (archived_at)');
+
   const count = database.prepare('SELECT COUNT(*) AS total FROM events').get();
   if (Number(count.total || 0) > 0) {
     return;
@@ -286,9 +290,9 @@ function ensureSqliteSchema(database) {
 
   database.prepare(`
     INSERT INTO events
-      (title, slug, description, date_start, date_end, online_start, address, offline_capacity, facecast_url, is_active, created_at, updated_at)
+      (title, slug, description, date_start, date_end, online_start, address, offline_capacity, facecast_event_id, facecast_url, is_active, created_at, updated_at)
     VALUES
-      (:title, :slug, :description, :dateStart, :dateEnd, :onlineStart, :address, NULL, NULL, 1, :now, :now)
+      (:title, :slug, :description, :dateStart, :dateEnd, :onlineStart, :address, NULL, :facecastEventId, :facecastUrl, 1, :now, :now)
   `).run({
     title: 'Митап: Человек труда',
     slug: 'mitap-chelovek-truda-2026-06-23',
@@ -297,6 +301,21 @@ function ensureSqliteSchema(database) {
     dateEnd: '2026-06-23 21:00:00',
     onlineStart: '2026-06-23 18:00:00',
     address: 'Знаменка 13с1, этаж 7, офис 25',
+    facecastEventId: '186673',
+    facecastUrl: 'https://facecast.net/w/6k2njf',
     now: nowSql(),
   });
+}
+
+function ensureSqliteColumn(database, table, column, definition) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(column)) {
+    throw new Error('Invalid sqlite schema identifier');
+  }
+
+  const columns = database.prepare(`PRAGMA table_info(${table})`).all();
+  if (columns.some((row) => row.name === column)) {
+    return;
+  }
+
+  database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }

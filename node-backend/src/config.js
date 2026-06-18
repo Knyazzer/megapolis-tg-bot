@@ -36,10 +36,18 @@ export const config = {
   },
   facecast: {
     apiBase: String(env('FACECAST_API_BASE', 'https://facecast.net/api/v1')).replace(/\/+$/, ''),
+    uid: String(env('FACECAST_UID', '')),
+    apiKey: String(env('FACECAST_API_KEY', '')),
     token: String(env('FACECAST_API_TOKEN', '')),
-    registrationEndpoint: String(env('FACECAST_REGISTRATION_ENDPOINT', '')),
+    registrationEndpoint: String(env('FACECAST_REGISTRATION_ENDPOINT', 'insert_key')),
+    channelId: String(env('FACECAST_CHANNEL_ID', '')),
     defaultStreamUrl: String(env('FACECAST_DEFAULT_STREAM_URL', '')),
+    passwordQueryParam: String(env('FACECAST_PASSWORD_QUERY_PARAM', 'password')),
+    directLinkFallback: Boolean(env('FACECAST_DIRECT_LINK_FALLBACK', false)),
     demoMode: Boolean(env('FACECAST_DEMO_MODE', true)),
+  },
+  devTools: {
+    enabled: Boolean(env('TEST_STAND_ENABLED', String(env('NODE_ENV', 'development')) !== 'production')),
   },
   links: {
     telegramChannel: String(env('TELEGRAM_CHANNEL_URL', 'https://t.me/megapolismedia')),

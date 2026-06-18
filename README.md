@@ -60,12 +60,15 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
 
 ## Facecast
 
-Публичная ссылка `https://facecast.net/api/v1` не раскрывает список методов без дополнительной документации или ключа. Поэтому интеграция сделана через настраиваемый адаптер:
+Онлайн-регистрация подключена через Facecast API `https://facecast.net/api/v1`.
+Для события "Митап: Человек труда" в `.env` используются:
 
-- `FACECAST_API_BASE`
-- `FACECAST_API_TOKEN`
-- `FACECAST_REGISTRATION_ENDPOINT`
-- `FACECAST_DEFAULT_STREAM_URL`
-- `FACECAST_DEMO_MODE`
+- `FACECAST_UID`
+- `FACECAST_API_KEY`
+- `FACECAST_REGISTRATION_ENDPOINT=insert_key`
+- `FACECAST_CHANNEL_ID=11110`
+- `FACECAST_DEFAULT_STREAM_URL=https://facecast.net/w/6k2njf`
+- `FACECAST_DIRECT_LINK_FALLBACK=true`
+- `FACECAST_DEMO_MODE=false` на продакшене
 
-Когда будет известен точный endpoint регистрации зрителя, достаточно заполнить переменные окружения или немного поправить `node-backend/src/services/facecast-client.js`.
+Метод `insert_key` создает персональный пароль для эфира, если событие Facecast работает в режиме с паролями. Если Facecast отвечает, что текущий режим события не поддерживает пароли, бот сохраняет онлайн-регистрацию и отправляет прямую ссылку на эфир.

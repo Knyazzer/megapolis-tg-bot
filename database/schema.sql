@@ -55,11 +55,13 @@ CREATE TABLE IF NOT EXISTS registrations (
   facecast_url VARCHAR(500) NULL,
   rejection_reason VARCHAR(500) NULL,
   approved_at DATETIME NULL,
+  archived_at DATETIME NULL,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
   UNIQUE KEY uniq_registration_person_event (person_id, event_id),
   INDEX idx_registrations_event_status (event_id, status),
   INDEX idx_registrations_attendance (attendance),
+  INDEX idx_registrations_archived (archived_at),
   CONSTRAINT fk_registrations_person FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE CASCADE,
   CONSTRAINT fk_registrations_event FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

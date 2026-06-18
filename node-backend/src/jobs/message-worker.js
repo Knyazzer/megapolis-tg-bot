@@ -18,6 +18,7 @@ async function processScheduledMessages(telegram, limit) {
        p.telegram_id,
        r.attendance,
        r.status,
+       r.archived_at,
        r.facecast_login,
        r.facecast_password,
        r.facecast_url,
@@ -118,6 +119,10 @@ function scheduledMessageIsStale(row) {
   const attendance = String(row.attendance || '');
   const status = String(row.status || '');
 
+  if (row.archived_at) {
+    return true;
+  }
+
   if (['cancelled', 'rejected', 'no_show'].includes(status)) {
     return true;
   }
@@ -209,7 +214,7 @@ function onlineKeyboard(registrationId, url) {
   if (url) {
     buttons.push([{ text: 'Ссылка на эфир', url }]);
   }
-  buttons.push([{ text: 'Напомнить логин и пароль', callback_data: `credentials:${registrationId}` }]);
+  buttons.push([{ text: 'Напомнить доступ', callback_data: `credentials:${registrationId}` }]);
   buttons.push([{ text: 'Главное меню', callback_data: 'main_menu' }]);
 
   return { inline_keyboard: buttons };
@@ -222,8 +227,11 @@ function postpromoText(row) {
     text += '\n\nТакже можно посмотреть запись эфира, если хочется вернуться к главным мыслям.';
   }
 
-  if (row.facecast_login) {
-    text += `\n\n<b>Логин:</b> ${h(row.facecast_login)}\n<b>Пароль:</b> ${h(row.facecast_password || '')}`;
+  if (row.facecast_login || row.facecast_password) {
+    const access = [];
+    if (row.facecast_login) access.push(`<b>Логин:</b> ${h(row.facecast_login)}`);
+    if (row.facecast_password) access.push(`<b>Пароль:</b> ${h(row.facecast_password)}`);
+    text += `\n\n${access.join('\n')}`;
   }
 
   return `${text}\n\n<b>Название:</b> ${h(row.title || '')}`;

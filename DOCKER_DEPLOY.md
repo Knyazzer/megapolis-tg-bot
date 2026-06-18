@@ -48,7 +48,12 @@ nano .env
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_WEBHOOK_SECRET`
 - `ADMIN_TELEGRAM_IDS`, если нужны уведомления модераторам
-- `FACECAST_*`, когда будет боевой endpoint Facecast
+- `FACECAST_UID` и `FACECAST_API_KEY`
+- `FACECAST_REGISTRATION_ENDPOINT=insert_key`
+- `FACECAST_CHANNEL_ID=11110`
+- `FACECAST_DEFAULT_STREAM_URL=https://facecast.net/w/6k2njf`
+- `FACECAST_DIRECT_LINK_FALLBACK=true` для текущего режима Facecast "Сбор контактов"
+- `FACECAST_DEMO_MODE=false`
 
 Хеш пароля админки можно получить локально или на сервере:
 

@@ -10,6 +10,7 @@ INSERT INTO events (
   online_start,
   address,
   offline_capacity,
+  facecast_event_id,
   facecast_url,
   is_active,
   created_at,
@@ -23,7 +24,8 @@ INSERT INTO events (
   '2026-06-23 18:00:00',
   'Знаменка 13с1, этаж 7, офис 25',
   NULL,
-  NULL,
+  '186673',
+  'https://facecast.net/w/6k2njf',
   1,
   NOW(),
   NOW()
@@ -34,4 +36,6 @@ INSERT INTO events (
   date_end = VALUES(date_end),
   online_start = VALUES(online_start),
   address = VALUES(address),
+  facecast_event_id = VALUES(facecast_event_id),
+  facecast_url = VALUES(facecast_url),
   updated_at = NOW();

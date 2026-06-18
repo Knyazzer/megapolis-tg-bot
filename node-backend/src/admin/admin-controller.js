@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { BotController } from '../bot/bot-controller.js';
 import { execute, isSqlite, query, queryOne, withTransaction } from '../db/mysql.js';
 import {
   eventFormatLabel,
@@ -11,18 +12,21 @@ import { dateShort, formatSqlDate, nowSql, parseDate, timeOnly, timeRange } from
 import { h } from '../utils/html.js';
 import { logger } from '../utils/logger.js';
 import { attemptLogin, csrfField, destroySession, verifyCsrf } from './admin-auth.js';
+import { seedDemoData } from './demo-data.js';
+import { SimulatorTelegramClient } from './simulator-telegram-client.js';
 
 const FLOW_NODE_WIDTH = 300;
 const FLOW_NODE_HEIGHT = 286;
 const FLOW_CONNECTOR_GAP = 24;
 const FLOW_BOARD_WIDTH = 3720;
-const FLOW_BOARD_HEIGHT = 1400;
+const FLOW_BOARD_HEIGHT = 1460;
+const FLOW_EDGE_LABEL_OFFSET = 26;
 
 export class AdminController {
   constructor({ session, response }) {
     this.session = session;
     this.response = response;
-    this.telegram = new TelegramClient();
+    this.telegram = this.adminTelegramClient();
     this.planner = new ReminderPlanner();
   }
 
@@ -64,6 +68,7 @@ export class AdminController {
   }
 
   async handlePost(action, form) {
+    const isAjax = String(form._ajax || '') === '1';
     try {
       if (action === 'save_event') {
         await this.saveEvent(form);
@@ -71,21 +76,70 @@ export class AdminController {
         await this.approveRegistration(form);
       } else if (action === 'reject_registration') {
         await this.rejectRegistration(form);
+      } else if (action === 'archive_registration') {
+        await this.archiveRegistration(form);
+      } else if (action === 'restore_registration') {
+        await this.restoreRegistration(form);
       } else if (action === 'mark_visited') {
         await this.markVisited(form);
       } else if (action === 'undo_visited') {
         await this.undoVisited(form);
       } else if (action === 'create_broadcast') {
         await this.createBroadcast(form);
+      } else if (action === 'seed_demo') {
+        await this.seedDemo();
+      } else if (action === 'simulator_reset') {
+        await this.resetSimulator();
+      } else if (action === 'simulator_start') {
+        await this.sendSimulatorMessage('/start');
+      } else if (action === 'simulator_send') {
+        await this.sendSimulatorMessage(String(form.text || '').trim());
+      } else if (action === 'simulator_contact') {
+        await this.sendSimulatorContact();
+      } else if (action === 'simulator_callback') {
+        await this.sendSimulatorCallback(String(form.data || ''), String(form.label || ''));
       } else {
         this.flash('Неизвестное действие', 'error');
       }
     } catch (error) {
       logger.error('admin action failed', { action, message: error.message, stack: error.stack });
+      if (isAjax) {
+        return json({ ok: false, error: error.message }, 500);
+      }
       this.flash(`Ошибка: ${error.message}`, 'error');
     }
 
+    if (isAjax) {
+      return this.ajaxActionResult(action, form);
+    }
+
     return redirect(String(form._return || '/'));
+  }
+
+  async ajaxActionResult(action, form) {
+    this.session.flash = null;
+    if ([
+      'approve_registration',
+      'reject_registration',
+      'archive_registration',
+      'restore_registration',
+    ].includes(action)) {
+      const row = await this.registrationRow(Number(form.id || 0));
+      return json({
+        ok: true,
+        kind: 'registration',
+        action,
+        id: Number(form.id || 0),
+        status: row ? this.registrationState(row) : '',
+        archived: Boolean(row?.archived_at),
+        attendance: row?.attendance || '',
+        createdAt: row?.created_at || '',
+        cardHtml: row ? this.registrationCard(row) : '',
+        tableRowHtml: row ? this.registrationTableRow(row, true) : '',
+      });
+    }
+
+    return json({ ok: true, action });
   }
 
   async page(page, url) {
@@ -95,6 +149,7 @@ export class AdminController {
     if (page === 'reception') return this.receptionPage(url);
     if (page === 'broadcasts') return this.broadcastsPage();
     if (page === 'flow') return this.flowPage();
+    if (page === 'simulator') return this.simulatorPage();
     return this.registrationsPage(url);
   }
 
@@ -164,20 +219,91 @@ export class AdminController {
 
   async peoplePage() {
     const people = await query('SELECT * FROM people ORDER BY created_at DESC LIMIT 300');
+    const histories = await this.peopleHistories(people);
     let body = '<section class="panel"><div class="panel-head"><h2>Люди</h2><span class="muted">Последние 300 контактов</span></div>';
-    body += '<table><thead><tr><th>Контакт</th><th>Компания</th><th>Телефон</th><th>Email</th><th>Согласие</th></tr></thead><tbody>';
+    body += '<table><thead><tr><th>Контакт</th><th>Компания</th><th>Телефон</th><th>Email</th><th>Согласие</th><th>История</th></tr></thead><tbody>';
     for (const person of people) {
       const username = person.username ? `@${person.username}` : `ID ${person.telegram_id}`;
       body += `<tr><td><strong>${h(person.full_name)}</strong><div class="muted">${h(username)}</div></td>`;
       body += `<td>${h(person.company)}<div class="muted">${h(person.position_title)}</div></td><td>${h(person.phone)}</td><td>${h(person.email)}</td>`;
-      body += `<td>${person.consent_accepted_at ? '<span class="badge ok">Есть</span>' : '<span class="badge warn">Нет</span>'}</td></tr>`;
+      body += `<td>${person.consent_accepted_at ? '<span class="badge ok">Есть</span>' : '<span class="badge warn">Нет</span>'}</td><td>${this.personHistory(histories.get(Number(person.id)) || [])}</td></tr>`;
     }
     return `${body}</tbody></table></section>`;
   }
 
+  async peopleHistories(people) {
+    if (people.length === 0) {
+      return new Map();
+    }
+
+    const params = {};
+    const placeholders = people.map((person, index) => {
+      const key = `person${index}`;
+      params[key] = Number(person.id);
+      return `:${key}`;
+    });
+    const rows = await query(
+      `SELECT r.person_id, r.attendance, r.status, r.created_at, r.updated_at, e.title
+       FROM registrations r
+       JOIN events e ON e.id = r.event_id
+       WHERE r.person_id IN (${placeholders.join(', ')})
+       ORDER BY r.created_at DESC, r.id DESC`,
+      params,
+    );
+    const histories = new Map();
+
+    for (const row of rows) {
+      const personId = Number(row.person_id);
+      if (!histories.has(personId)) histories.set(personId, []);
+      const entries = histories.get(personId);
+
+      if (row.attendance === 'online') {
+        entries.push({
+          type: 'online',
+          date: row.created_at,
+          title: row.title,
+          label: 'Зарегистрировался онлайн',
+        });
+      } else {
+        entries.push({
+          type: 'offline',
+          date: row.created_at,
+          title: row.title,
+          label: 'Зарегистрировался на мероприятие',
+        });
+        if (row.status === 'visited') {
+          entries.push({
+            type: 'visited',
+            date: row.updated_at || row.created_at,
+            title: row.title,
+            label: 'Пришел на мероприятие',
+          });
+        }
+      }
+    }
+
+    for (const entries of histories.values()) {
+      entries.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+    }
+
+    return histories;
+  }
+
+  personHistory(entries) {
+    if (entries.length === 0) {
+      return '<span class="muted">Пока нет действий</span>';
+    }
+
+    let body = '<ol class="person-history">';
+    for (const entry of entries) {
+      body += `<li class="person-history-item type-${h(entry.type)}"><span class="history-dot"></span><div><strong>${h(entry.label)}</strong><span>${h(entry.title)}</span><time>${h(this.dateTime(entry.date))}</time></div></li>`;
+    }
+    return `${body}</ol>`;
+  }
+
   async registrationsPage(url) {
     const eventId = Number(url.searchParams.get('event_id') || 0);
-    const view = ['all', 'online', 'offline'].includes(url.searchParams.get('view')) ? url.searchParams.get('view') : 'all';
+    const view = ['all', 'online', 'offline', 'archived'].includes(url.searchParams.get('view')) ? url.searchParams.get('view') : 'all';
     const layout = ['list', 'kanban'].includes(url.searchParams.get('layout')) ? url.searchParams.get('layout') : (view === 'all' ? 'kanban' : 'list');
     const events = await query('SELECT id, title FROM events ORDER BY date_start DESC');
     const where = [];
@@ -188,6 +314,11 @@ export class AdminController {
     }
     if (view === 'online') where.push("r.attendance = 'online'");
     if (view === 'offline') where.push("r.attendance = 'offline'");
+    if (view === 'archived') {
+      where.push('r.archived_at IS NOT NULL');
+    } else {
+      where.push('r.archived_at IS NULL');
+    }
 
     let sql = `SELECT r.*, p.full_name, p.company, p.position_title, p.phone, p.email, p.telegram_id, e.title, e.date_start, e.date_end, e.address
       FROM registrations r JOIN people p ON p.id = r.person_id JOIN events e ON e.id = r.event_id`;
@@ -219,7 +350,7 @@ export class AdminController {
          FROM registrations r
          JOIN people p ON p.id = r.person_id
          JOIN events e ON e.id = r.event_id
-         WHERE r.event_id = :eventId AND r.attendance = 'offline' AND r.status IN ('approved','visited')
+         WHERE r.event_id = :eventId AND r.attendance = 'offline' AND r.status IN ('approved','visited') AND r.archived_at IS NULL
          ORDER BY CASE r.status WHEN 'approved' THEN 0 WHEN 'visited' THEN 1 ELSE 2 END, p.full_name ASC
          LIMIT 1000`,
         { eventId },
@@ -227,12 +358,12 @@ export class AdminController {
     }
     const visited = registrations.filter((row) => row.status === 'visited').length;
     let body = `<section class="panel reception-workspace"><div class="panel-head"><h2>Ресепшн</h2><span class="muted">${eventId > 0 ? `${visited} из ${registrations.length} пришли` : 'Выберите мероприятие'}</span></div>`;
-    body += '<form class="reception-filter" method="get"><input type="hidden" name="page" value="reception">';
+    body += '<form class="reception-filter" method="get" data-autosubmit-select><input type="hidden" name="page" value="reception">';
     body += '<label>Мероприятие<select name="event_id"><option value="0">Выберите мероприятие</option>';
     for (const event of events) {
       body += `<option value="${Number(event.id)}" ${eventId === Number(event.id) ? 'selected' : ''}>${h(`${event.title} - ${dateShort(event.date_start)}`)}</option>`;
     }
-    body += '</select></label><button class="button button-primary" type="submit">Открыть список</button></form>';
+    body += '</select></label></form>';
     if (eventId <= 0) body += '<p class="empty">Выберите мероприятие, чтобы открыть список подтвержденных офлайн-гостей.</p>';
     else if (!selectedEvent) body += '<p class="empty">Мероприятие не найдено.</p>';
     else body += this.receptionChecklist(registrations, this.currentReceptionUrl(url));
@@ -276,6 +407,140 @@ export class AdminController {
       body += this.flowNode(id, node, users[id] || [], queues[id] || []);
     }
     return `${body}</div>${this.flowModal()}</section>`;
+  }
+
+  async simulatorPage() {
+    this.ensureDevToolsEnabled();
+    const simulator = this.simulatorState();
+    const person = await queryOne('SELECT * FROM people WHERE telegram_id = :telegramId LIMIT 1', {
+      telegramId: simulator.telegramId,
+    });
+    const registration = person
+      ? await queryOne(
+        `SELECT r.*, e.title
+         FROM registrations r
+         JOIN events e ON e.id = r.event_id
+         WHERE r.person_id = :personId
+         ORDER BY r.updated_at DESC
+         LIMIT 1`,
+        { personId: person.id },
+      )
+      : null;
+
+    let body = '<section class="panel simulator-workspace">';
+    body += '<div class="panel-head"><div><h2>Тест-чат</h2><span class="muted">Отдельный стенд для прохождения сценария бота</span></div>';
+    body += `<form method="post">${csrfField(this.session)}<input type="hidden" name="action" value="seed_demo"><input type="hidden" name="_return" value="/?page=simulator"><button class="button" type="submit">Заполнить демо-данными</button></form></div>`;
+    body += '<div class="simulator-grid">';
+    body += '<aside class="simulator-side">';
+    body += `<div class="simulator-stat"><span>Тестовый Telegram ID</span><strong>${Number(simulator.telegramId)}</strong></div>`;
+    body += `<div class="simulator-stat"><span>Состояние профиля</span><strong>${h(person?.state || 'новый')}</strong></div>`;
+    body += `<div class="simulator-stat"><span>Последняя регистрация</span><strong>${registration ? `${h(registration.title)} · ${h(this.registrationStatusPlain(registration))}` : 'нет'}</strong></div>`;
+    body += `<form method="post" class="simulator-action">${csrfField(this.session)}<input type="hidden" name="action" value="simulator_reset"><input type="hidden" name="_return" value="/?page=simulator"><button class="button danger" type="submit">Сбросить тестовый чат</button></form>`;
+    body += `<form method="post" class="simulator-action">${csrfField(this.session)}<input type="hidden" name="action" value="simulator_start"><input type="hidden" name="_return" value="/?page=simulator"><button class="button button-primary" type="submit">Запустить /start</button></form>`;
+    body += '</aside>';
+    body += '<div class="simulator-phone">';
+    body += '<div class="simulator-phone-head"><strong>Megapolis Bot</strong><span>test mode</span></div>';
+    body += '<div class="sim-chat-feed">';
+    if (simulator.history.length === 0) {
+      body += '<p class="sim-empty">Нажмите /start, чтобы начать тестовый диалог.</p>';
+    } else {
+      for (const message of simulator.history) body += this.simulatorBubble(message);
+    }
+    body += '</div>';
+    body += `<form method="post" class="sim-chat-form">${csrfField(this.session)}<input type="hidden" name="action" value="simulator_send"><input type="hidden" name="_return" value="/?page=simulator"><input name="text" placeholder="Написать сообщение" autocomplete="off"><button class="button button-primary" type="submit">Отправить</button></form>`;
+    body += '</div></div></section>';
+    return body;
+  }
+
+  async seedDemo() {
+    this.ensureDevToolsEnabled();
+    const result = await seedDemoData();
+    this.flash(`Демо-данные готовы: ${result.events} события, ${result.people} людей, ${result.registrations} регистраций`);
+  }
+
+  async resetSimulator() {
+    this.ensureDevToolsEnabled();
+    const simulator = this.simulatorState();
+    const person = await queryOne('SELECT id FROM people WHERE telegram_id = :telegramId LIMIT 1', {
+      telegramId: simulator.telegramId,
+    });
+    if (person) {
+      await execute('DELETE FROM people WHERE id = :id', { id: person.id });
+    }
+    simulator.history = [];
+    this.flash('Тестовый чат сброшен');
+  }
+
+  async sendSimulatorMessage(text) {
+    this.ensureDevToolsEnabled();
+    if (!text) {
+      this.flash('Введите сообщение для тестового чата', 'error');
+      return;
+    }
+
+    const simulator = this.simulatorState();
+    this.pushSimulatorUserMessage(text);
+    await this.runSimulatorUpdate({
+      message: {
+        message_id: simulator.history.length,
+        date: Math.floor(Date.now() / 1000),
+        text,
+        chat: { id: simulator.telegramId, type: 'private' },
+        from: this.simulatorFrom(),
+      },
+    });
+  }
+
+  async sendSimulatorContact() {
+    this.ensureDevToolsEnabled();
+    const simulator = this.simulatorState();
+    const phone = '+7 999 777-55-33';
+    this.pushSimulatorUserMessage(phone);
+    await this.runSimulatorUpdate({
+      message: {
+        message_id: simulator.history.length,
+        date: Math.floor(Date.now() / 1000),
+        text: phone,
+        contact: {
+          phone_number: phone,
+          first_name: 'Тестовый',
+          last_name: 'Гость',
+          user_id: simulator.telegramId,
+        },
+        chat: { id: simulator.telegramId, type: 'private' },
+        from: this.simulatorFrom(),
+      },
+    });
+  }
+
+  async sendSimulatorCallback(data, label) {
+    this.ensureDevToolsEnabled();
+    if (!data) {
+      return;
+    }
+
+    const simulator = this.simulatorState();
+    this.pushSimulatorUserMessage(label || data, 'button');
+    await this.runSimulatorUpdate({
+      callback_query: {
+        id: `sim-${Date.now()}`,
+        data,
+        from: this.simulatorFrom(),
+        message: {
+          message_id: simulator.history.length,
+          chat: { id: simulator.telegramId, type: 'private' },
+        },
+      },
+    });
+  }
+
+  async runSimulatorUpdate(update) {
+    const simulator = this.simulatorState();
+    const telegram = new SimulatorTelegramClient({
+      history: simulator.history,
+      captureChatId: simulator.telegramId,
+    });
+    await new BotController({ telegram }).handle(update);
   }
 
   async saveEvent(form) {
@@ -327,7 +592,7 @@ export class AdminController {
   async approveRegistration(form) {
     let registration = await this.registrationWithDetails(Number(form.id || 0));
     if (!registration) throw new Error('Регистрация не найдена');
-    await execute("UPDATE registrations SET status = 'approved', approved_at = :now, updated_at = :now WHERE id = :id", {
+    await execute("UPDATE registrations SET status = 'approved', archived_at = NULL, approved_at = :now, updated_at = :now WHERE id = :id", {
       id: registration.id,
       now: nowSql(),
     });
@@ -340,13 +605,33 @@ export class AdminController {
   async rejectRegistration(form) {
     const registration = await this.registrationWithDetails(Number(form.id || 0));
     if (!registration) throw new Error('Регистрация не найдена');
-    await execute("UPDATE registrations SET status = 'rejected', rejection_reason = :reason, updated_at = :now WHERE id = :id", {
+    await execute("UPDATE registrations SET status = 'rejected', archived_at = NULL, rejection_reason = :reason, updated_at = :now WHERE id = :id", {
       id: registration.id,
       reason: 'Места на офлайн закончились',
       now: nowSql(),
     });
     await this.sendOfflineRejected(registration);
     this.flash('Отказ отправлен участнику');
+  }
+
+  async archiveRegistration(form) {
+    const registration = await this.registrationWithDetails(Number(form.id || 0));
+    if (!registration) throw new Error('Регистрация не найдена');
+    await execute('UPDATE registrations SET archived_at = :now, updated_at = :now WHERE id = :id', {
+      id: registration.id,
+      now: nowSql(),
+    });
+    this.flash('Регистрация отправлена в архив');
+  }
+
+  async restoreRegistration(form) {
+    const registration = await this.registrationWithDetails(Number(form.id || 0));
+    if (!registration) throw new Error('Регистрация не найдена');
+    await execute('UPDATE registrations SET archived_at = NULL, updated_at = :now WHERE id = :id', {
+      id: registration.id,
+      now: nowSql(),
+    });
+    this.flash('Регистрация восстановлена');
   }
 
   async markVisited(form) {
@@ -434,7 +719,7 @@ export class AdminController {
     const where = ['p.consent_accepted_at IS NOT NULL'];
     if (audience !== 'all') {
       if (eventId <= 0) throw new Error('Для этой аудитории нужно выбрать мероприятие');
-      where.push('r.event_id = :eventId');
+      where.push('r.event_id = :eventId', 'r.archived_at IS NULL');
     }
     if (audience === 'event_online') {
       where.push("r.attendance = 'online'", "r.status = 'approved'");
@@ -482,17 +767,24 @@ export class AdminController {
   async registrationCounts(eventId) {
     const where = eventId > 0 ? 'WHERE event_id = :eventId' : '';
     const row = await queryOne(
-      `SELECT COUNT(*) AS total,
-        COALESCE(SUM(CASE WHEN attendance = 'online' THEN 1 ELSE 0 END), 0) AS online,
-        COALESCE(SUM(CASE WHEN attendance = 'offline' THEN 1 ELSE 0 END), 0) AS offline
+      `SELECT
+        COALESCE(SUM(CASE WHEN archived_at IS NULL THEN 1 ELSE 0 END), 0) AS total,
+        COALESCE(SUM(CASE WHEN archived_at IS NULL AND attendance = 'online' THEN 1 ELSE 0 END), 0) AS online,
+        COALESCE(SUM(CASE WHEN archived_at IS NULL AND attendance = 'offline' THEN 1 ELSE 0 END), 0) AS offline,
+        COALESCE(SUM(CASE WHEN archived_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS archived
        FROM registrations ${where}`,
       { eventId },
     );
-    return { all: Number(row?.total || 0), online: Number(row?.online || 0), offline: Number(row?.offline || 0) };
+    return {
+      all: Number(row?.total || 0),
+      online: Number(row?.online || 0),
+      offline: Number(row?.offline || 0),
+      archived: Number(row?.archived || 0),
+    };
   }
 
   registrationViewTabs(view, eventId, counts, layout) {
-    const tabs = { all: 'Все', online: 'Онлайн', offline: 'Офлайн' };
+    const tabs = { all: 'Все', online: 'Онлайн', offline: 'Офлайн', archived: 'Архив' };
     let body = '<nav class="view-tabs">';
     for (const [key, label] of Object.entries(tabs)) {
       body += `<a class="${view === key ? 'active' : ''}" href="${h(this.registrationsUrl(key, eventId, layout))}"><span>${h(label)}</span><strong>${Number(counts[key] || 0)}</strong></a>`;
@@ -530,20 +822,23 @@ export class AdminController {
   }
 
   registrationsKanban(registrations, view) {
-    const columns = view === 'online'
+    const columns = view === 'archived'
+      ? { archived: 'Архив' }
+      : view === 'online'
       ? { online: 'Онлайн зарегистрированы' }
       : view === 'offline'
         ? { pending: 'На проверке', approved: 'Офлайн подтверждены', visited: 'Пришли', rejected: 'Отказ', cancelled: 'Отменены', no_show: 'Не пришли' }
         : { online: 'Онлайн', pending: 'На проверке', approved: 'Офлайн подтверждены', visited: 'Пришли', rejected: 'Отказ', cancelled: 'Отменены', no_show: 'Не пришли' };
     const grouped = Object.fromEntries(Object.keys(columns).map((key) => [key, []]));
     for (const row of registrations) {
-      let key = row.attendance === 'online' ? 'online' : (Object.hasOwn(grouped, row.status) ? row.status : 'cancelled');
+      let key = view === 'archived' ? 'archived' : (row.attendance === 'online' ? 'online' : (Object.hasOwn(grouped, row.status) ? row.status : 'cancelled'));
       if (!Object.hasOwn(grouped, key)) key = Object.keys(grouped)[0];
       grouped[key].push(row);
     }
+    for (const rows of Object.values(grouped)) rows.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
     let body = `<div class="kanban" style="--kanban-columns: ${Object.keys(columns).length}">`;
     for (const [status, label] of Object.entries(columns)) {
-      body += `<section class="kanban-column status-${h(status)}"><header><span>${h(label)}</span><strong>${grouped[status].length}</strong></header><div class="kanban-list">`;
+      body += `<section class="kanban-column status-${h(status)}" data-kanban-column data-status="${h(status)}"><header><span>${h(label)}</span><strong>${grouped[status].length}</strong></header><div class="kanban-list" data-kanban-list>`;
       if (grouped[status].length === 0) body += '<p class="kanban-empty">Пусто</p>';
       for (const row of grouped[status]) body += this.registrationCard(row);
       body += '</div></section>';
@@ -551,10 +846,28 @@ export class AdminController {
     return `${body}</div>`;
   }
 
+  async registrationRow(id) {
+    if (!id) return null;
+    return queryOne(
+      `SELECT r.*, p.full_name, p.company, p.position_title, p.phone, p.email, p.telegram_id, e.title, e.date_start, e.date_end, e.address
+       FROM registrations r
+       JOIN people p ON p.id = r.person_id
+       JOIN events e ON e.id = r.event_id
+       WHERE r.id = :id`,
+      { id },
+    );
+  }
+
+  registrationState(row) {
+    if (row.archived_at) return 'archived';
+    return row.attendance === 'online' ? 'online' : row.status;
+  }
+
   registrationCard(row) {
     const attendance = row.attendance === 'offline' ? 'офлайн' : 'онлайн';
     const attendanceClass = row.attendance === 'offline' ? 'offline' : 'online';
-    let body = '<article class="registration-card">';
+    const state = this.registrationState(row);
+    let body = `<article class="registration-card ${row.archived_at ? 'is-archived' : ''}" data-registration-card data-registration-id="${Number(row.id)}" data-status="${h(state)}" data-created-at="${h(row.created_at || '')}">`;
     body += `<div class="card-top"><span class="format-pill ${attendanceClass}">${h(attendance)}</span><span class="muted">${h(this.dateTime(row.created_at))}</span></div>`;
     body += `<h3>${h(row.full_name)}</h3><p class="card-company">${h(row.company)}</p>`;
     if (row.position_title) body += `<p class="muted">${h(row.position_title)}</p>`;
@@ -570,37 +883,76 @@ export class AdminController {
     if (withActions) body += '<th>Действия</th>';
     body += '</tr></thead><tbody>';
     for (const row of registrations) {
-      const attendance = row.attendance === 'offline' ? 'офлайн' : 'онлайн';
-      body += `<tr><td><strong>${h(row.full_name)}</strong><div class="muted">${h(row.company)}</div><div class="muted">${h(row.email)}</div></td>`;
-      body += `<td>${h(row.title)}</td><td>${h(attendance)}</td><td>${this.registrationStatusLabel(row)}</td><td>${h(this.dateTime(row.created_at))}</td>`;
-      if (withActions) body += `<td class="actions-cell">${this.registrationActions(row)}</td>`;
-      body += '</tr>';
+      body += this.registrationTableRow(row, withActions);
     }
     return `${body}</tbody></table>`;
   }
 
+  registrationTableRow(row, withActions) {
+    const attendance = row.attendance === 'offline' ? 'офлайн' : 'онлайн';
+    const state = this.registrationState(row);
+    let body = `<tr data-registration-row data-registration-id="${Number(row.id)}" data-status="${h(state)}" data-created-at="${h(row.created_at || '')}"><td><strong>${h(row.full_name)}</strong><div class="muted">${h(row.company)}</div><div class="muted">${h(row.email)}</div></td>`;
+    body += `<td>${h(row.title)}</td><td>${h(attendance)}</td><td>${this.registrationStatusLabel(row)}</td><td>${h(this.dateTime(row.created_at))}</td>`;
+    if (withActions) body += `<td class="actions-cell">${this.registrationActions(row)}</td>`;
+    return `${body}</tr>`;
+  }
+
   receptionChecklist(registrations, returnUrl) {
     if (registrations.length === 0) return '<p class="empty">Нет подтвержденных офлайн-гостей для ресепшна.</p>';
-    let body = '<div class="reception-list">';
+    const waiting = registrations
+      .filter((row) => row.status !== 'visited')
+      .sort((a, b) => this.receptionName(a).localeCompare(this.receptionName(b), 'ru'));
+    const arrived = registrations
+      .filter((row) => row.status === 'visited')
+      .sort((a, b) => this.receptionName(a).localeCompare(this.receptionName(b), 'ru'));
+
+    let body = '<div class="reception-list" data-reception-board>';
+    body += this.receptionGroup('Ожидаем гостей', waiting, 'approved', returnUrl);
+    body += this.receptionGroup('Пришли', arrived, 'visited', returnUrl);
+    return `${body}</div>`;
+  }
+
+  receptionGroup(title, registrations, status, returnUrl) {
+    let body = `<section class="reception-group" data-reception-group data-status="${h(status)}"><header><span>${h(title)}</span><strong>${registrations.length}</strong></header><div class="reception-group-list" data-reception-list data-status="${h(status)}">`;
+    if (registrations.length === 0) body += '<p class="reception-empty">Пусто</p>';
     for (const row of registrations) {
       const visited = row.status === 'visited';
-      body += `<article class="reception-row ${visited ? 'is-visited' : ''}"><div class="reception-main"><strong>${h(row.full_name)}</strong><span>${h(row.company)}</span><span class="muted">${h(row.position_title)}</span></div><div class="reception-action">${this.visitToggleForm(row, visited, returnUrl)}</div></article>`;
+      const statusKey = visited ? 'visited' : 'approved';
+      body += `<article class="reception-row ${visited ? 'is-visited' : ''}" data-reception-row data-status="${h(statusKey)}" data-person-name="${h(this.receptionName(row))}"><div class="reception-main"><strong>${h(row.full_name)}</strong><span>${h(row.company)}</span><span class="muted">${h(row.position_title)}</span></div><div class="reception-action">${this.visitToggleForm(row, visited, returnUrl)}</div></article>`;
     }
-    return `${body}</div>`;
+    return `${body}</div></section>`;
+  }
+
+  receptionName(row) {
+    return String(row.full_name || '').trim().toLocaleLowerCase('ru-RU');
   }
 
   visitToggleForm(row, visited, returnUrl = null) {
     const action = visited ? 'undo_visited' : 'mark_visited';
     const label = visited ? 'Пришел' : 'Отметить приход';
+    const targetStatus = visited ? 'approved' : 'visited';
     const ret = returnUrl || this.currentRegistrationsUrl();
-    return `<form method="post" class="inline-form">${csrfField(this.session)}<input type="hidden" name="action" value="${h(action)}"><input type="hidden" name="_return" value="${h(ret)}"><input type="hidden" name="id" value="${Number(row.id)}"><button class="checkin-toggle ${visited ? 'is-on' : ''}" type="submit"><span class="check-box"></span>${h(label)}</button></form>`;
+    return `<form method="post" class="inline-form" data-reception-action="${h(action)}" data-target-status="${h(targetStatus)}">${csrfField(this.session)}<input type="hidden" name="action" value="${h(action)}"><input type="hidden" name="_return" value="${h(ret)}"><input type="hidden" name="id" value="${Number(row.id)}"><button class="checkin-toggle ${visited ? 'is-on' : ''}" type="submit"><span class="check-box"></span>${h(label)}</button></form>`;
   }
 
   registrationActions(row) {
-    if (row.attendance !== 'offline' || row.status !== 'pending') return '<span class="muted">-</span>';
+    if (row.archived_at) {
+      return this.registrationActionForm(row, 'restore_registration', 'Восстановить', 'button button-primary', row.attendance === 'online' ? 'online' : row.status);
+    }
+
+    const actions = [];
     const ret = this.currentRegistrationsUrl();
-    return `<form method="post" class="inline-form">${csrfField(this.session)}<input type="hidden" name="action" value="approve_registration"><input type="hidden" name="_return" value="${h(ret)}"><input type="hidden" name="id" value="${Number(row.id)}"><button class="button button-primary" type="submit">Аппрув</button></form>`
-      + `<form method="post" class="inline-form">${csrfField(this.session)}<input type="hidden" name="action" value="reject_registration"><input type="hidden" name="_return" value="${h(ret)}"><input type="hidden" name="id" value="${Number(row.id)}"><button class="button danger" type="submit">Отказать</button></form>`;
+    if (row.attendance === 'offline' && row.status === 'pending') {
+      actions.push(this.registrationActionForm(row, 'approve_registration', 'Подтвердить', 'button button-primary', 'approved', ret));
+      actions.push(this.registrationActionForm(row, 'reject_registration', 'Отказать', 'button danger', 'rejected', ret));
+    }
+    actions.push(this.registrationActionForm(row, 'archive_registration', 'В архив', 'button muted-button', 'archived', ret));
+    return actions.length > 0 ? actions.join('') : '<span class="muted">-</span>';
+  }
+
+  registrationActionForm(row, action, label, buttonClass, targetStatus, returnUrl = null) {
+    const ret = returnUrl || this.currentRegistrationsUrl();
+    return `<form method="post" class="inline-form" data-registration-action="${h(action)}" data-target-status="${h(targetStatus || '')}">${csrfField(this.session)}<input type="hidden" name="action" value="${h(action)}"><input type="hidden" name="_return" value="${h(ret)}"><input type="hidden" name="id" value="${Number(row.id)}"><button class="${h(buttonClass)}" type="submit">${h(label)}</button></form>`;
   }
 
   audiences() {
@@ -626,6 +978,7 @@ export class AdminController {
   }
 
   registrationStatusLabel(row) {
+    if (row.archived_at) return '<span class="badge">Архив</span>';
     if (row.attendance === 'online' && row.status === 'approved') return '<span class="badge ok">Зарегистрирован</span>';
     return this.statusLabel(row.status);
   }
@@ -660,6 +1013,144 @@ export class AdminController {
     return { inline_keyboard: [[{ text: 'Главное меню', callback_data: 'main_menu' }]] };
   }
 
+  registrationStatusPlain(row) {
+    if (row.archived_at) return 'в архиве';
+    if (row.attendance === 'online' && row.status === 'approved') return 'онлайн зарегистрирован';
+    const labels = {
+      pending: 'на проверке',
+      approved: 'подтверждено',
+      visited: 'пришел',
+      no_show: 'не пришел',
+      rejected: 'отказ',
+      cancelled: 'отменено',
+    };
+    return labels[row.status] || String(row.status || '');
+  }
+
+  simulatorState() {
+    if (!this.session.simulator) {
+      const seed = Number.parseInt(String(this.session.id || '0').slice(0, 8), 16) || Date.now();
+      this.session.simulator = {
+        telegramId: 920000000 + (seed % 999999),
+        history: [],
+      };
+    }
+
+    if (!Array.isArray(this.session.simulator.history)) {
+      this.session.simulator.history = [];
+    }
+
+    return this.session.simulator;
+  }
+
+  simulatorFrom() {
+    const simulator = this.simulatorState();
+    return {
+      id: simulator.telegramId,
+      is_bot: false,
+      first_name: 'Тестовый',
+      last_name: 'Гость',
+      username: `test_guest_${simulator.telegramId}`,
+      language_code: 'ru',
+    };
+  }
+
+  pushSimulatorUserMessage(text, type = 'message') {
+    const simulator = this.simulatorState();
+    simulator.history.push({
+      id: `${Date.now()}-${simulator.history.length + 1}`,
+      at: new Date().toISOString(),
+      direction: 'user',
+      type,
+      text,
+    });
+  }
+
+  simulatorBubble(message) {
+    const isUser = message.direction === 'user';
+    let body = `<article class="sim-bubble ${isUser ? 'is-user' : 'is-bot'}">`;
+    if (message.type === 'venue') {
+      body += '<span class="sim-kind">Карта</span>';
+    } else if (message.type === 'photo') {
+      body += '<span class="sim-kind">Картинка</span>';
+    } else if (message.type === 'video_note') {
+      body += '<span class="sim-kind">Кружок</span>';
+    } else if (message.type === 'button') {
+      body += '<span class="sim-kind">Нажата кнопка</span>';
+    }
+    body += `<div class="sim-text">${this.telegramHtml(message.text || '')}</div>`;
+    if (message.media) {
+      body += `<div class="sim-media">${h(message.media)}</div>`;
+    }
+    body += this.simulatorButtons(message.replyMarkup);
+    return `${body}</article>`;
+  }
+
+  simulatorButtons(replyMarkup = {}) {
+    if (!replyMarkup || Object.keys(replyMarkup).length === 0) {
+      return '';
+    }
+
+    if (Array.isArray(replyMarkup.inline_keyboard)) {
+      let body = '<div class="sim-buttons">';
+      for (const row of replyMarkup.inline_keyboard) {
+        for (const button of row) {
+          if (button.url) {
+            body += `<a class="sim-button" href="${h(button.url)}" target="_blank" rel="noreferrer">${h(button.text)}</a>`;
+          } else if (button.callback_data) {
+            body += `<form method="post">${csrfField(this.session)}<input type="hidden" name="action" value="simulator_callback"><input type="hidden" name="_return" value="/?page=simulator"><input type="hidden" name="data" value="${h(button.callback_data)}"><input type="hidden" name="label" value="${h(button.text)}"><button class="sim-button" type="submit">${h(button.text)}</button></form>`;
+          }
+        }
+      }
+      return `${body}</div>`;
+    }
+
+    if (Array.isArray(replyMarkup.keyboard)) {
+      let body = '<div class="sim-buttons">';
+      for (const row of replyMarkup.keyboard) {
+        for (const button of row) {
+          const text = typeof button === 'string' ? button : button.text;
+          const action = button.request_contact ? 'simulator_contact' : 'simulator_send';
+          body += `<form method="post">${csrfField(this.session)}<input type="hidden" name="action" value="${h(action)}"><input type="hidden" name="_return" value="/?page=simulator">`;
+          if (!button.request_contact) body += `<input type="hidden" name="text" value="${h(text)}">`;
+          body += `<button class="sim-button" type="submit">${h(text)}</button></form>`;
+        }
+      }
+      return `${body}</div>`;
+    }
+
+    return '';
+  }
+
+  telegramHtml(text) {
+    return h(text)
+      .replaceAll('&lt;b&gt;', '<b>')
+      .replaceAll('&lt;/b&gt;', '</b>')
+      .replaceAll('&lt;strong&gt;', '<strong>')
+      .replaceAll('&lt;/strong&gt;', '</strong>')
+      .replaceAll('&lt;code&gt;', '<code>')
+      .replaceAll('&lt;/code&gt;', '</code>');
+  }
+
+  adminTelegramClient() {
+    const simulator = this.session?.simulator;
+    if (!simulator?.telegramId || !Array.isArray(simulator.history)) {
+      return new TelegramClient();
+    }
+
+    return new SimulatorTelegramClient({
+      history: simulator.history,
+      captureChatId: simulator.telegramId,
+      fallback: new TelegramClient(),
+    });
+  }
+
+  ensureDevToolsEnabled() {
+    if (!config.devTools.enabled) {
+      throw new Error('Тестовый стенд отключен');
+    }
+  }
+
   pageTitle(page) {
     return {
       events: 'Мероприятия',
@@ -669,6 +1160,7 @@ export class AdminController {
       reception: 'Ресепшн',
       broadcasts: 'Рассылки',
       flow: 'Сценарий',
+      simulator: 'Тест-чат',
     }[page] || 'Регистрации';
   }
 
@@ -691,6 +1183,7 @@ export class AdminController {
       ['events', '/?page=events', 'Мероприятия', 'events'],
       ['broadcasts', '/?page=broadcasts', 'Рассылки', 'broadcasts'],
       ['flow', '/?page=flow', 'Сценарий', 'flow'],
+      ...(config.devTools.enabled ? [['simulator', '/?page=simulator', 'Тест-чат', 'simulator']] : []),
     ]) {
       const [key, href, label, icon] = item;
       body += `<a${activePage === key ? ' class="active"' : ''} href="${h(href)}" title="${h(label)}">${this.icon(icon)}<span class="nav-label">${h(label)}</span></a>`;
@@ -709,6 +1202,7 @@ export class AdminController {
       events: '<rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M8 3v4M16 3v4M4 10h16M8 14h3M13 14h3"></path>',
       broadcasts: '<path d="M4 12h3l9-5v10l-9-5H4z"></path><path d="M18 9.5a4 4 0 0 1 0 5"></path>',
       flow: '<circle cx="6" cy="6" r="2"></circle><circle cx="18" cy="6" r="2"></circle><circle cx="12" cy="18" r="2"></circle><path d="M8 6h8M7 8l4 8M17 8l-4 8"></path>',
+      simulator: '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7A2.5 2.5 0 0 1 17.5 16H9l-5 4v-4.5A2.5 2.5 0 0 1 4 13.5z"></path><path d="M8 9h8M8 12h5"></path>',
       logout: '<path d="M10 17l5-5-5-5"></path><path d="M15 12H3"></path><path d="M14 4h5v16h-5"></path>',
       panel: '<rect x="4" y="5" width="16" height="14" rx="2"></rect><path d="M10 5v14M14 9l-3 3 3 3"></path>',
     };
@@ -719,7 +1213,7 @@ export class AdminController {
     const lanes = [
       ['Общий путь регистрации', 116, 356],
       ['Офлайн-гости и ресепшн', 510, 356],
-      ['Онлайн, напоминания и материалы', 904, 356],
+      ['Онлайн, напоминания и материалы', 904, 516],
     ];
     const columns = [
       ['Старт', 96],
@@ -744,12 +1238,12 @@ export class AdminController {
       profile: this.flowNodeData('3', 'Анкета', 'Данные', 1024, 154, [['Имя', 'Спасибо! Давайте познакомимся 🙂 Напишите, пожалуйста, имя и фамилию.'], ['Компания', 'Из какой вы компании?'], ['Должность', 'А какая у вас должность?'], ['Телефон', 'Поделитесь, пожалуйста, номером телефона. Можно отправить его кнопкой ниже.'], ['Email', 'И последний шаг: напишите вашу почту.'], ['Финал анкеты', 'Готово, спасибо! Теперь можно выбрать мероприятие ✨']], ['Ответ текстом', 'Отправить телефон']),
       events: this.flowNodeData('4', 'Выбор мероприятия', 'Регистрация', 1488, 154, [['Список событий', 'Выберите мероприятие, на которое хотите зарегистрироваться.\n\nАдрес на этом шаге не показываем: человек сначала выбирает событие.'], ['Если событий нет', 'Пока ближайших мероприятий нет. Как только появится новое событие, мы обязательно расскажем 🙂']], ['Выбрать событие', 'Главное меню']),
       format_choice: this.flowNodeData('5', 'Выбор формата', 'Регистрация', 1952, 154, [['После выбора события', 'Отлично, вот что запланировано:\n\nНазвание: {название}\nДата: {дата}\nВремя: {время}\nФормат: {офлайн + онлайн / только офлайн / только онлайн}\n\n{описание мероприятия}\n\nВыберите удобный формат участия:']], ['Прийти офлайн', 'Смотреть онлайн', 'Главное меню']),
-      offline_pending: this.flowNodeData('6A', 'Офлайн на проверке', 'Модерация', 2416, 154, [['После выбора офлайна', 'Спасибо, заявка на офлайн-участие принята 🏢\n\nОрганизаторы проверят список гостей и пришлют подтверждение. Адрес и детали площадки отправим после аппрува.']], ['Модератор: аппрув', 'Модератор: отказ']),
+      offline_pending: this.flowNodeData('6A', 'Офлайн на проверке', 'Модерация', 2416, 154, [['После выбора офлайна', 'Спасибо, заявка на офлайн-участие принята 🏢\n\nОрганизаторы проверят список гостей и пришлют подтверждение. Адрес и детали площадки отправим после подтверждения участия.']], ['Модератор: подтвердить', 'Модератор: отказ']),
       offline_rejected: this.flowNodeData('6A-', 'Офлайн отказ', 'Модерация', 2880, 154, [['Отказ модератора', 'К сожалению, сейчас не можем подтвердить офлайн-участие, но вы можете присоединиться онлайн. Так вы точно не пропустите эфир 💻']], ['Буду смотреть онлайн']),
-      offline_approved: this.flowNodeData('7A', 'Офлайн подтвержден', 'Офлайн', 2416, 548, [['Аппрув модератора', 'Готово, офлайн-участие подтверждено 🏢\n\nЖдём вас на мероприятии:\nНазвание: {название}\nДата: {дата}\nВремя: {время}\nНаш адрес: {адрес}\nФормат: офлайн\n\nПеред событием пришлём напоминание.'], ['Если есть координаты', 'После сообщения бот отправляет venue-карту с адресом площадки.']], ['Ресепшн', 'Напоминания']),
+      offline_approved: this.flowNodeData('7A', 'Офлайн подтвержден', 'Офлайн', 2416, 548, [['Подтверждение модератора', 'Готово, офлайн-участие подтверждено 🏢\n\nЖдём вас на мероприятии:\nНазвание: {название}\nДата: {дата}\nВремя: {время}\nНаш адрес: {адрес}\nФормат: офлайн\n\nПеред событием пришлём напоминание.'], ['Если есть координаты', 'После сообщения бот отправляет venue-карту с адресом площадки.']], ['Ресепшн', 'Напоминания']),
       reception: this.flowNodeData('7B', 'Ресепшн', 'Офлайн', 2880, 548, [['Системное действие', 'Пользователю сообщение не отправляется. Модератор на ресепшне ставит галочку в админке.']], ['Отметить приход']),
       visited: this.flowNodeData('7C', 'Пришел', 'Офлайн', 3344, 548, [['Системное действие', 'Статус нужен для отчетности и дальнейшей рассылки материалов.']], ['Постпромо']),
-      online_access: this.flowNodeData('6B', 'Онлайн зарегистрирован', 'Онлайн', 2416, 942, [['Доступ к эфиру', 'Готово, вы зарегистрированы онлайн! 💻\n\nДанные для подключения:\nЛогин: {facecast_login}\nПароль: {facecast_password}\nНазвание: {название}\nДата: {дата}\nВремя подключения: {время старта онлайна}\n\nСохраните сообщение, а перед эфиром мы напомним о старте.']], ['Ссылка на эфир', 'Напомнить логин и пароль']),
+      online_access: this.flowNodeData('6B', 'Онлайн зарегистрирован', 'Онлайн', 2416, 942, [['Доступ к эфиру', 'Готово, вы зарегистрированы онлайн! 💻\n\nДанные для подключения:\n{персональная ссылка / логин и пароль, если эфир работает по паролю}\nНазвание: {название}\nДата: {дата}\nВремя подключения: {время старта онлайна}\n\nСохраните сообщение, а перед эфиром мы напомним о старте.']], ['Ссылка на эфир', 'Напомнить доступ']),
       reminders: this.flowNodeData('8', 'Напоминания', 'Автоматизация', 2880, 942, [['Офлайн за день', 'Напоминаем о встрече завтра 🏢'], ['Офлайн за 2 часа', 'До офлайн-встречи осталось около двух часов 🙂'], ['Онлайн за 15 минут', 'Напоминаем про эфир: начинаем через 15 минут 💻'], ['Онлайн старт', 'Мы начали! Добро пожаловать в прямой эфир 💻']], ['Открыть эфир', 'Не смогу офлайн']),
       postpromo: this.flowNodeData('9', 'Постпромо', 'Материалы', 3344, 942, [['После события', 'Спасибо, что были с нами ✨\n\nДелимся материалами и яркими моментами прошедшего мероприятия.']], ['Ссылка на эфир', 'Подборка фото']),
       menu: this.flowNodeData('10', 'Главное меню', 'Навигация', 1488, 942, [['Главное меню', 'Что посмотрим дальше? Мы рядом в соцсетях и на сайте 🙂']], ['Телеграм канал', 'Сайт', 'Ближайшие мероприятия']),
@@ -767,20 +1261,20 @@ export class AdminController {
       ['profile', 'events', 'Анкета заполнена'],
       ['events', 'format_choice', 'Выбрано событие'],
       ['format_choice', 'offline_pending', 'Прийти офлайн'],
-      ['format_choice', 'online_access', 'Смотреть онлайн', 'bottom', 'left', [[2102, 890], [2392, 890]]],
-      ['events', 'menu', 'Главное меню', 'bottom', 'top'],
-      ['offline_pending', 'offline_approved', 'Аппрув', 'bottom', 'top'],
+      ['format_choice', 'online_access', 'Смотреть онлайн', 'bottom', 'left', [[2102, 852], [2292, 852], [2292, 1085]]],
+      ['events', 'menu', 'Главное меню', 'bottom', 'top', [], { labelSide: 'right' }],
+      ['offline_pending', 'offline_approved', 'Подтвердить', 'bottom', 'top', [], { labelSide: 'right' }],
       ['offline_pending', 'offline_rejected', 'Отказ'],
-      ['offline_rejected', 'online_access', 'Буду онлайн', 'bottom', 'top', [[3030, 860], [2566, 860]]],
+      ['offline_rejected', 'online_access', 'Буду онлайн', 'bottom', 'top', [[3030, 866], [2566, 866]], { labelSide: 'above' }],
       ['offline_approved', 'reception', 'День события'],
       ['reception', 'visited', 'Пришел'],
-      ['offline_approved', 'reminders', 'Напоминания', 'bottom', 'left', [[2566, 890], [2856, 890]]],
+      ['offline_approved', 'reminders', 'Напоминания', 'bottom', 'top', [[2802, 858], [2802, 908], [3030, 908]], { labelSide: 'below' }],
       ['online_access', 'reminders', 'Напоминания'],
-      ['reminders', 'online_access', 'Не смогу офлайн', 'bottom', 'bottom', [[3030, 1320], [2566, 1320]]],
+      ['reminders', 'online_access', 'Не смогу офлайн', 'bottom', 'bottom', [[3030, 1318], [2566, 1318]], { labelSide: 'below' }],
       ['reminders', 'postpromo', 'После события'],
       ['visited', 'postpromo', 'Материалы', 'bottom', 'top'],
-      ['postpromo', 'menu', 'Главное меню', 'bottom', 'bottom', [[3494, 1320], [1638, 1320]]],
-    ].map(([from, to, label, fromAnchor = 'right', toAnchor = 'left', via = []]) => ({ from, to, label, fromAnchor, toAnchor, via }));
+      ['postpromo', 'menu', 'Главное меню', 'bottom', 'bottom', [[3494, 1374], [1638, 1374]], { labelSide: 'below' }],
+    ].map(([from, to, label, fromAnchor = 'right', toAnchor = 'left', via = [], options = {}]) => ({ from, to, label, fromAnchor, toAnchor, via, ...options }));
   }
 
   flowSvg(edges, nodes) {
@@ -790,29 +1284,32 @@ export class AdminController {
       const points = this.flowEdgePoints(edge, nodes);
       const path = this.flowPath(points);
       const [x, y] = points[0];
-      body += `<circle class="connector-dot" cx="${x}" cy="${y}" r="3"></circle><path d="${h(path)}" marker-end="url(#arrow)"><title>${h(edge.label)}</title></path>`;
+      body += '<g class="journey-edge">';
+      body += `<path class="edge-halo" d="${h(path)}"></path><path class="edge-line" d="${h(path)}" marker-end="url(#arrow)"><title>${h(edge.label)}</title></path><circle class="connector-dot" cx="${x}" cy="${y}" r="3"></circle>`;
       body += this.flowEdgeLabel(edge, points);
+      body += '</g>';
     }
     return `${body}</svg>`;
   }
 
   flowEdgePoints(edge, nodes) {
     return [
-      this.flowAnchor(nodes[edge.from], edge.fromAnchor || 'right'),
+      this.flowAnchor(nodes[edge.from], edge.fromAnchor || 'right', 'from'),
       ...(edge.via || []),
-      this.flowAnchor(nodes[edge.to], edge.toAnchor || 'left'),
+      this.flowAnchor(nodes[edge.to], edge.toAnchor || 'left', 'to'),
     ];
   }
 
-  flowAnchor(node, anchor) {
+  flowAnchor(node, anchor, endpoint = 'from') {
     const x = Number(node.x);
     const y = Number(node.y);
     const centerX = x + FLOW_NODE_WIDTH / 2;
     const centerY = y + FLOW_NODE_HEIGHT / 2;
-    if (anchor === 'left') return [x - FLOW_CONNECTOR_GAP, centerY];
-    if (anchor === 'top') return [centerX, y - FLOW_CONNECTOR_GAP];
-    if (anchor === 'bottom') return [centerX, y + FLOW_NODE_HEIGHT + FLOW_CONNECTOR_GAP];
-    return [x + FLOW_NODE_WIDTH + FLOW_CONNECTOR_GAP, centerY];
+    const gap = endpoint === 'from' ? FLOW_CONNECTOR_GAP : 0;
+    if (anchor === 'left') return [x - gap, centerY];
+    if (anchor === 'top') return [centerX, y - gap];
+    if (anchor === 'bottom') return [centerX, y + FLOW_NODE_HEIGHT + gap];
+    return [x + FLOW_NODE_WIDTH + gap, centerY];
   }
 
   flowPath(points) {
@@ -846,13 +1343,14 @@ export class AdminController {
 
   flowEdgeLabel(edge, points) {
     if (!edge.label || points.length < 2) return '';
-    const [x, y] = this.flowLabelPoint(points);
-    const width = Math.min(Math.max(edge.label.length * 6.6 + 18, 54), 152);
+    const label = edge.shortLabel || edge.label;
+    const width = Math.min(Math.max(label.length * 6.2 + 18, 54), 144);
     const height = 22;
-    return `<g class="edge-label"><rect x="${Math.round(x - width / 2)}" y="${Math.round(y - height / 2)}" width="${Math.round(width)}" height="${height}" rx="11"></rect><text x="${Math.round(x)}" y="${Math.round(y + 4)}" text-anchor="middle">${h(edge.label)}</text></g>`;
+    const placement = this.flowLabelPlacement(edge, points, width);
+    return `<g class="edge-label"><rect x="${Math.round(placement.x - width / 2)}" y="${Math.round(placement.y - height / 2)}" width="${Math.round(width)}" height="${height}" rx="11"></rect><text x="${Math.round(placement.x)}" y="${Math.round(placement.y + 4)}" text-anchor="middle">${h(label)}</text></g>`;
   }
 
-  flowLabelPoint(points) {
+  flowLabelPlacement(edge, points, width) {
     let chosen = [points[0], points[1]];
     let chosenLength = 0;
     for (let index = 1; index < points.length; index += 1) {
@@ -863,10 +1361,21 @@ export class AdminController {
         chosenLength = length;
       }
     }
-    return [
-      (chosen[0][0] + chosen[1][0]) / 2,
-      (chosen[0][1] + chosen[1][1]) / 2,
-    ];
+    const dx = chosen[1][0] - chosen[0][0];
+    const dy = chosen[1][1] - chosen[0][1];
+    const isHorizontal = Math.abs(dx) >= Math.abs(dy);
+    let x = (chosen[0][0] + chosen[1][0]) / 2;
+    let y = (chosen[0][1] + chosen[1][1]) / 2;
+    const side = edge.labelSide || (isHorizontal ? 'above' : 'right');
+
+    if (isHorizontal) {
+      y += side === 'below' ? FLOW_EDGE_LABEL_OFFSET : -FLOW_EDGE_LABEL_OFFSET;
+    } else {
+      const sideOffset = Math.max(FLOW_EDGE_LABEL_OFFSET, width / 2 + 14);
+      x += side === 'left' ? -sideOffset : sideOffset;
+    }
+
+    return { x, y };
   }
 
   flowNode(id, node, users, queue) {
@@ -907,7 +1416,7 @@ export class AdminController {
       `SELECT p.id AS person_id, p.full_name, p.username, p.state, r.id AS registration_id,
         r.attendance, r.status, r.created_at AS registration_created_at, e.title AS event_title
        FROM people p
-       LEFT JOIN registrations r ON r.person_id = p.id
+       LEFT JOIN registrations r ON r.person_id = p.id AND r.archived_at IS NULL
        LEFT JOIN events e ON e.id = r.event_id
        ORDER BY COALESCE(r.created_at, p.created_at) DESC
        LIMIT 1000`,
@@ -965,6 +1474,14 @@ export class AdminController {
 
 function redirect(location) {
   return { status: 302, headers: { Location: location }, body: '' };
+}
+
+function json(payload, status = 200) {
+  return {
+    status,
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify(payload),
+  };
 }
 
 function html(body, status = 200) {

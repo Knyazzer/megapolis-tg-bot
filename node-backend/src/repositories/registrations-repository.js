@@ -9,6 +9,7 @@ const REGISTRATION_FIELDS = [
   'facecast_url',
   'rejection_reason',
   'approved_at',
+  'archived_at',
 ];
 
 export class RegistrationsRepository {
@@ -28,13 +29,14 @@ export class RegistrationsRepository {
     if (isSqlite()) {
       await query(
         `INSERT INTO registrations
-          (person_id, event_id, attendance, status, approved_at, created_at, updated_at)
+          (person_id, event_id, attendance, status, approved_at, archived_at, created_at, updated_at)
          VALUES
-          (:personId, :eventId, :attendance, :status, :approvedAt, :now, :now)
+          (:personId, :eventId, :attendance, :status, :approvedAt, NULL, :now, :now)
          ON CONFLICT(person_id, event_id) DO UPDATE SET
           attendance = excluded.attendance,
           status = excluded.status,
           approved_at = excluded.approved_at,
+          archived_at = NULL,
           updated_at = excluded.updated_at`,
         {
           personId,
@@ -51,13 +53,14 @@ export class RegistrationsRepository {
 
     await query(
       `INSERT INTO registrations
-        (person_id, event_id, attendance, status, approved_at, created_at, updated_at)
+        (person_id, event_id, attendance, status, approved_at, archived_at, created_at, updated_at)
        VALUES
-        (:personId, :eventId, :attendance, :status, :approvedAt, :now, :now)
+        (:personId, :eventId, :attendance, :status, :approvedAt, NULL, :now, :now)
        ON DUPLICATE KEY UPDATE
         attendance = VALUES(attendance),
         status = VALUES(status),
         approved_at = VALUES(approved_at),
+        archived_at = NULL,
         updated_at = VALUES(updated_at)`,
       {
         personId,

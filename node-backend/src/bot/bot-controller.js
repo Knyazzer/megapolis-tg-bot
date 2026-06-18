@@ -338,7 +338,7 @@ export class BotController {
     await this.planner.cancelAll(registration);
 
     const text = 'Спасибо, заявка на офлайн-участие принята 🏢\n\n'
-      + 'Организаторы проверят список гостей и пришлют подтверждение. Адрес и детали площадки отправим после аппрува.';
+      + 'Организаторы проверят список гостей и пришлют подтверждение. Адрес и детали площадки отправим после подтверждения участия.';
 
     await this.telegram.sendMessage(chatId, text, mainMenuKeyboard());
     await this.notifyAdminsAboutOfflineRequest(person, event, registration);
@@ -356,9 +356,25 @@ export class BotController {
       return;
     }
 
-    let registration = await this.registrations.upsert(person.id, event.id, 'online', 'approved');
-    const credentials = await this.facecast.registerViewer(event, person);
+    let credentials;
+    try {
+      credentials = await this.facecast.registerViewer(event, person);
+    } catch (error) {
+      logger.warn('facecast online registration failed', {
+        eventId: event.id,
+        facecastEventId: event.facecast_event_id,
+        personId: person.id,
+        message: error.message,
+      });
+      await this.telegram.sendMessage(
+        chatId,
+        'Сейчас не получилось создать доступ к онлайн-трансляции. Мы уже видим проблему и вернёмся с ссылкой чуть позже.',
+        mainMenuKeyboard(),
+      );
+      return;
+    }
 
+    let registration = await this.registrations.upsert(person.id, event.id, 'online', 'approved');
     await this.registrations.update(registration.id, {
       facecast_login: credentials.login,
       facecast_password: credentials.password,
@@ -391,16 +407,16 @@ export class BotController {
     }
 
     await this.telegram.sendMessage(chatId, 'Конечно, планы меняются. Переключаем вас на онлайн-участие 💻');
-    await this.registrations.update(registration.id, { attendance: 'online', status: 'approved' });
     await this.registerOnline(chatId, person, event);
   }
 
   async sendOnlineAccess(chatId, event, registration) {
     const url = registration.facecast_url || event.facecast_url || config.facecast.defaultStreamUrl || '';
+    const access = [];
+    if (registration.facecast_login) access.push(`<b>Логин:</b> ${h(registration.facecast_login)}`);
+    if (registration.facecast_password) access.push(`<b>Пароль:</b> ${h(registration.facecast_password)}`);
     const text = 'Готово, вы зарегистрированы онлайн! 💻\n\n'
-      + 'Данные для подключения:\n'
-      + `<b>Логин:</b> ${h(registration.facecast_login || '')}\n`
-      + `<b>Пароль:</b> ${h(registration.facecast_password || '')}\n`
+      + (access.length > 0 ? `Данные для подключения:\n${access.join('\n')}\n` : 'Ссылка на эфир будет в кнопке ниже.\n')
       + `<b>Название:</b> ${h(event.title)}\n`
       + `<b>Дата:</b> ${h(dateShort(event.date_start))}\n`
       + `<b>Время подключения:</b> ${h(timeOnly(event.online_start || event.date_start))}\n\n`
