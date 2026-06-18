@@ -1,17 +1,25 @@
 import { createServer } from 'node:http';
+import { readFile } from 'node:fs/promises';
+import { dirname, extname, join, normalize } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
+import { AdminController } from './admin/admin-controller.js';
+import { loadSession } from './admin/admin-auth.js';
 import { BotController } from './bot/bot-controller.js';
 import { pingDb, queryOne } from './db/mysql.js';
 import { TelegramClient } from './services/telegram-client.js';
 import { h } from './utils/html.js';
 import { logger } from './utils/logger.js';
 
+const currentDir = dirname(fileURLToPath(import.meta.url));
+const publicDir = normalize(join(currentDir, '../public'));
+
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`);
 
-    if (request.method === 'GET' && ['/', '/index.html'].includes(url.pathname)) {
-      await handleIndex(response);
+    if (request.method === 'GET' && url.pathname.startsWith('/assets/')) {
+      await handleStatic(response, url.pathname);
       return;
     }
 
@@ -21,7 +29,7 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === 'GET' && ['/privacy', '/privacy.php'].includes(url.pathname)) {
-      redirect(response, config.links.privacy);
+      handlePrivacy(response);
       return;
     }
 
@@ -30,10 +38,26 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if ((request.method === 'GET' || request.method === 'POST') && ['/', '/index.html'].includes(url.pathname)) {
+      const session = loadSession(request, response);
+      const form = request.method === 'POST' ? await readFormBody(request) : {};
+      const result = await new AdminController({ session, response }).handle({
+        method: request.method,
+        url,
+        form,
+      });
+      sendResult(response, result);
+      return;
+    }
+
     json(response, 404, { ok: false, error: 'Not found' });
   } catch (error) {
     logger.error('http error', { message: error.message, stack: error.stack });
-    json(response, 500, { ok: false, error: 'Internal server error' });
+    if (error.status === 419) {
+      text(response, 419, 'CSRF token mismatch');
+    } else {
+      json(response, 500, { ok: false, error: 'Internal server error' });
+    }
   }
 });
 
@@ -41,27 +65,44 @@ server.listen(config.port, config.host, () => {
   logger.info(`Node bot backend is listening on ${config.host}:${config.port}`);
 });
 
-async function handleIndex(response) {
+async function handleStatic(response, pathname) {
+  const safePath = normalize(decodeURIComponent(pathname)).replace(/^(\.\.(\/|\\|$))+/, '');
+  const path = normalize(join(publicDir, safePath));
+  if (!path.startsWith(publicDir)) {
+    text(response, 403, 'Forbidden');
+    return;
+  }
+
+  try {
+    const body = await readFile(path);
+    response.writeHead(200, { 'Content-Type': contentType(path) });
+    response.end(body);
+  } catch {
+    text(response, 404, 'Not found');
+  }
+}
+
+function handlePrivacy(response) {
   html(response, 200, `<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Megapolis Event Bot</title>
+  <title>Согласие на обработку персональных данных</title>
   <style>
     body { margin: 0; font: 16px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #101828; background: #f6f8fb; }
     main { max-width: 760px; margin: 12vh auto; padding: 32px; background: #fff; border: 1px solid #e4e7ec; border-radius: 8px; }
     h1 { margin: 0 0 12px; font-size: 28px; }
-    code { background: #eef2f6; border-radius: 6px; padding: 2px 6px; }
-    a { color: #175cd3; }
+    p { margin: 0 0 14px; }
   </style>
 </head>
 <body>
   <main>
-    <h1>Megapolis Event Bot backend</h1>
-    <p>Node.js backend работает. Telegram webhook: <code>/telegram/webhook</code>.</p>
-    <p>Диагностика: <a href="/health">/health</a>. Проверка Telegram API: <a href="/health?telegram=1">/health?telegram=1</a>.</p>
-    <p>Согласие на персональные данные: <a href="${h(config.links.privacy)}">${h(config.links.privacy)}</a>.</p>
+    <h1>Согласие на обработку персональных данных</h1>
+    <p>Настоящим пользователь даёт согласие ООО «Мегаполис Медиа» на обработку персональных данных, переданных при регистрации на мероприятия: ФИО, компанию, должность, телефон, email и Telegram-идентификатор.</p>
+    <p>Данные используются для регистрации на мероприятия, коммуникации с участником, допуска к онлайн-эфирам и офлайн-площадке, отправки напоминаний и материалов после мероприятия.</p>
+    <p>Согласие действует 3 года и может быть отозвано пользователем в порядке, предусмотренном законодательством РФ.</p>
+    <p>Оператор: ООО «Мегаполис Медиа», ИНН 7710750836, ОГРН 1097746299034.</p>
   </main>
 </body>
 </html>`);
@@ -166,9 +207,39 @@ function readJsonBody(request, limit = 1024 * 1024) {
   });
 }
 
-function redirect(response, location) {
-  response.writeHead(302, { Location: location });
-  response.end();
+async function readFormBody(request) {
+  const raw = await readRawBody(request);
+  return Object.fromEntries(new URLSearchParams(raw));
+}
+
+function readRawBody(request, limit = 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > limit) {
+        reject(new Error('Request body is too large'));
+        request.destroy();
+      }
+    });
+    request.on('end', () => resolve(body));
+    request.on('error', reject);
+  });
+}
+
+function sendResult(response, result) {
+  const headers = result.headers || {};
+  for (const [key, value] of Object.entries(headers)) {
+    const existing = response.getHeader(key);
+    if (existing && key.toLowerCase() === 'set-cookie') {
+      response.setHeader(key, Array.isArray(existing) ? [...existing, value] : [existing, value]);
+    } else {
+      response.setHeader(key, value);
+    }
+  }
+  response.writeHead(result.status || 200);
+  response.end(result.body || '');
 }
 
 function json(response, status, payload) {
@@ -179,4 +250,19 @@ function json(response, status, payload) {
 function html(response, status, payload) {
   response.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' });
   response.end(payload);
+}
+
+function text(response, status, payload) {
+  response.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8' });
+  response.end(payload);
+}
+
+function contentType(path) {
+  const ext = extname(path);
+  if (ext === '.css') return 'text/css; charset=utf-8';
+  if (ext === '.js') return 'application/javascript; charset=utf-8';
+  if (ext === '.svg') return 'image/svg+xml';
+  if (ext === '.png') return 'image/png';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  return 'application/octet-stream';
 }

@@ -29,6 +29,10 @@ export const config = {
       .map((value) => value.trim())
       .filter(Boolean),
   },
+  admin: {
+    login: String(env('ADMIN_LOGIN', 'admin')),
+    passwordHash: String(env('ADMIN_PASSWORD_HASH', '')),
+  },
   facecast: {
     apiBase: String(env('FACECAST_API_BASE', 'https://facecast.net/api/v1')).replace(/\/+$/, ''),
     token: String(env('FACECAST_API_TOKEN', '')),

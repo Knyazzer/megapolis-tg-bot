@@ -11,9 +11,11 @@
     "dev": "node --watch src/server.js",
     "worker": "node src/worker.js",
     "worker:loop": "node src/worker.js --loop",
+    "hash-password": "node scripts/hash-password.js",
     "check": "node scripts/check-syntax.js"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
     "mysql2": "^3.11.5"
   }
 }

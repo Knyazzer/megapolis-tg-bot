@@ -1,48 +1,48 @@
 # Megapolis Event Bot
 
-Минимальный PHP/MySQL-проект для Telegram-бота регистрации на мероприятия и админки модератора на обычном хостинге REG.RU.
+Node.js/MySQL-проект для Telegram-бота регистрации на мероприятия, админки модератора, рассылок, ресепшна и сценарной карты.
 
 ## Что внутри
 
-- `public/webhook.php` - Telegram webhook.
-- `public/index.php` - админка для `martis.pro`.
-- `cron/run.php` - отправка напоминаний и рассылок.
+- `node-backend/src/server.js` - HTTP-сервер, админка, Telegram webhook, health и privacy.
+- `node-backend/src/worker.js` - отправка напоминаний и рассылок.
+- `node-backend/src/bot/` - сценарий Telegram-бота.
+- `node-backend/src/admin/` - админка модератора на Node.js.
 - `database/schema.sql` - структура MySQL.
 - `database/seed.sql` - стартовое мероприятие "Митап: Человек труда".
 - `database/migrations/` - точечные SQL-обновления для уже созданной базы.
-- `tools/hash_password.php` - генерация хеша пароля администратора.
-- `tools/set_webhook.php` - установка webhook в Telegram.
+- `node-backend/README.md` - подробный запуск на VDS.
 
-## Установка на REG.RU
-
-Подробный чеклист для ISPmanager лежит в `DEPLOY_REG_RU.md`.
-
-1. Создать MySQL-базу и пользователя в панели REG.RU.
-2. Импортировать `database/schema.sql`, затем `database/seed.sql` через phpMyAdmin.
-3. Скопировать проект на хостинг так, чтобы web-root смотрел в папку `public`.
-4. Скопировать `.env.example` в `.env` и заполнить значения.
-5. Сгенерировать хеш пароля:
+## Быстрый запуск на VDS
 
 ```bash
-php tools/hash_password.php 'your-admin-password'
+cd node-backend
+npm ci
+cp .env.example .env
+nano .env
+npm run check
+npm start
 ```
 
-6. Вставить результат в `ADMIN_PASSWORD_HASH`.
-7. Установить webhook:
+Worker для напоминаний и рассылок:
 
 ```bash
-php tools/set_webhook.php
+npm run worker:loop
 ```
 
-8. Добавить cron-задачу раз в минуту:
+Webhook Telegram:
 
 ```bash
-* * * * * /usr/bin/php /path/to/project/cron/run.php >/dev/null 2>&1
+curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
+  -d "url=https://martis.pro/telegram/webhook" \
+  -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
 ```
+
+Полная инструкция по Nginx/systemd лежит в `node-backend/README.md`.
 
 ## Важное по секретам
 
-Не храните реальный токен Telegram в репозитории. Если токен был отправлен в чат, лучше перевыпустить его в BotFather и заменить в `.env`.
+`node-backend/.env` не хранится в Git. Если Telegram-токен был отправлен в чат, лучше перевыпустить его в BotFather перед продакшеном.
 
 ## Facecast
 
@@ -54,4 +54,4 @@ php tools/set_webhook.php
 - `FACECAST_DEFAULT_STREAM_URL`
 - `FACECAST_DEMO_MODE`
 
-Когда будет известен точный endpoint регистрации зрителя, достаточно заполнить переменные окружения или немного поправить `src/Services/FacecastClient.php`.
+Когда будет известен точный endpoint регистрации зрителя, достаточно заполнить переменные окружения или немного поправить `node-backend/src/services/facecast-client.js`.

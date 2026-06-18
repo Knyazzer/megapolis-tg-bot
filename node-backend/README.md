@@ -1,18 +1,21 @@
-# Megapolis Event Bot Node backend
+# Megapolis Event Bot
 
-Первый этап миграции с PHP на Node.js: Telegram webhook, сценарий регистрации, Facecast-доступ, планирование напоминаний и отправка рассылок через ту же MySQL-схему.
+Полная Node.js-версия проекта: админка, Telegram webhook, сценарий регистрации, Facecast-доступ, планирование напоминаний и отправка рассылок через MySQL.
 
-## Что уже перенесено
+## Что внутри
 
+- `GET /` - админка модератора.
 - `POST /telegram/webhook` - Telegram webhook.
 - `GET /health` - диагностика Node backend и MySQL.
 - `GET /health?telegram=1` - диагностика с запросом к Telegram API.
+- `GET /privacy.php` - согласие на обработку персональных данных.
 - Анкета пользователя, согласие, выбор мероприятия, онлайн/офлайн регистрация.
 - Онлайн-регистрация без модератора.
 - Офлайн-заявка со статусом `pending`.
+- Регистрации, канбан/список, ресепшн, мероприятия, люди, рассылки и сценарная карта в админке.
 - Очередь напоминаний и рассылок: `npm run worker` или `npm run worker:loop`.
 
-Админка пока может оставаться на PHP и работать с этой же базой. Важно: Telegram webhook должен быть включен только на одном backend.
+PHP на сервере не нужен.
 
 ## Подготовка VDS
 
@@ -44,20 +47,27 @@ npm start
 
 В `.env` нужно заполнить:
 
-- `APP_URL=https://bot.martis.pro` или домен VDS.
+- `APP_URL=https://martis.pro` или домен VDS.
 - `HOST=127.0.0.1` и `PORT=3000` для работы за Nginx.
 - `DB_HOST`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`.
+- `ADMIN_LOGIN` и `ADMIN_PASSWORD_HASH`.
 - `TELEGRAM_BOT_TOKEN`.
 - `TELEGRAM_WEBHOOK_SECRET` - длинная случайная строка.
 - `ADMIN_TELEGRAM_IDS` - Telegram ID модераторов через запятую.
 - `PRIVACY_URL=https://martis.pro/privacy.php`.
 - `FACECAST_*`, когда будет точный метод Facecast для регистрации зрителей.
 
+Хеш пароля админки можно сгенерировать без PHP:
+
+```bash
+npm run hash-password -- "новый-пароль"
+```
+
 ## Nginx reverse proxy
 
 ```nginx
 server {
-    server_name bot.martis.pro;
+    server_name martis.pro;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
@@ -73,7 +83,7 @@ server {
 После SSL:
 
 ```bash
-sudo certbot --nginx -d bot.martis.pro
+sudo certbot --nginx -d martis.pro
 ```
 
 ## systemd для backend
@@ -130,11 +140,11 @@ sudo systemctl status megapolis-bot-worker
 
 ## Telegram webhook
 
-После того как `https://bot.martis.pro/health?telegram=1` показывает `ok: true`, переключаем webhook:
+После того как `https://martis.pro/health?telegram=1` показывает `ok: true`, переключаем webhook:
 
 ```bash
 curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
-  -d "url=https://bot.martis.pro/telegram/webhook" \
+  -d "url=https://martis.pro/telegram/webhook" \
   -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
 ```
 
@@ -146,7 +156,5 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getWebhookInfo"
 
 ## Следующий этап
 
-1. Перенести действия админки на Node API: аппрув/отказ, ресепшн, мероприятия, рассылки.
-2. Перенести HTML админки или сделать React/Vite frontend.
-3. Добавить Bitrix24 sync worker.
-4. После проверки выключить PHP webhook и PHP cron.
+1. Добавить Bitrix24 sync worker.
+2. При необходимости заменить server-rendered админку на React/Vite frontend.

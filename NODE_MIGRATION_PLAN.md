@@ -146,7 +146,7 @@
 - На тестовом домене поднять Node.js.
 - Прогнать сценарии Telegram.
 - Переключить webhook Telegram на Node URL.
-- Оставить PHP-админку read-only на короткий период или выключить.
+- Выключить PHP-слой: админка, webhook и worker работают на Node.js.
 - Проверить cron и рассылки.
 
 ## 5. Важное ограничение Reg.ru
@@ -160,7 +160,7 @@
 - Selectel/Timeweb Cloud;
 - отдельный serverless webhook relay.
 
-Админку можно оставить на Reg.ru, но Telegram-бот лучше держать там, где есть стабильный исходящий доступ к Telegram API.
+После решения перейти на зарубежную VDS админка, бот и worker должны жить в одном Node.js-приложении.
 
 ## 6. Риски
 
@@ -185,15 +185,16 @@
 
 ## 8. Текущий прогресс
 
-Создана папка `node-backend` с первым этапом миграции:
+Создана папка `node-backend` с полной Node.js-версией:
 
 - Node.js 20 backend без привязки к shared hosting.
 - MySQL-подключение через `mysql2`.
 - Telegram webhook `POST /telegram/webhook`.
 - Health-check `GET /health` и `GET /health?telegram=1`.
 - Перенесен основной сценарий бота: согласие, анкета, список событий, онлайн/офлайн регистрация.
+- Перенесена админка: регистрации, канбан/список, ресепшн, мероприятия, люди, рассылки и сценарная карта.
 - Перенесено планирование напоминаний.
 - Добавлен Node worker для `scheduled_messages` и `broadcast_messages`.
-- Подготовлена инструкция `node-backend/README.md` для VDS, Nginx, systemd и webhook.
+- Подготовлены инструкции `README.md`, `DEPLOY_VDS.md` и `node-backend/README.md` для VDS, Nginx, systemd и webhook.
 
-Следующий технический шаг: поднять это на VDS на тестовом домене, подключить к MySQL и прогнать Telegram-сценарий, пока PHP-админка остается рабочей.
+PHP-файлы удалены из tracked-проекта. Следующий технический шаг: поднять Node.js на VDS, подключить MySQL и прогнать админку, webhook, регистрацию, ресепшн и worker.
