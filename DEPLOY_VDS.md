@@ -2,6 +2,27 @@
 
 Проект теперь полностью работает на Node.js. PHP на сервере не нужен.
 
+## Вариант A. Docker Compose
+
+Рекомендуемый вариант для нового сервера: `DOCKER_DEPLOY.md`.
+
+Коротко:
+
+```bash
+cp .env.docker.example .env
+nano .env
+docker compose up -d --build
+curl -s http://127.0.0.1:3000/health
+```
+
+Compose поднимает:
+
+- `app` - Node.js backend и админка.
+- `worker` - напоминания и рассылки.
+- `db` - MySQL 8.0 с volume `mysql_data`.
+
+## Вариант B. Ручной Node.js запуск
+
 ## 1. Что должно быть на сервере
 
 - Ubuntu 22.04/24.04.

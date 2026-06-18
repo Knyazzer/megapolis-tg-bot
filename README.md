@@ -12,8 +12,22 @@ Node.js/MySQL-проект для Telegram-бота регистрации на 
 - `database/seed.sql` - стартовое мероприятие "Митап: Человек труда".
 - `database/migrations/` - точечные SQL-обновления для уже созданной базы.
 - `node-backend/README.md` - подробный запуск на VDS.
+- `compose.yaml` - Docker Compose для backend, worker и MySQL.
+- `DOCKER_DEPLOY.md` - инструкция Docker-деплоя на VDS/ODS.
 
 ## Быстрый запуск на VDS
+
+Через Docker:
+
+```bash
+cp .env.docker.example .env
+nano .env
+docker compose up -d --build
+```
+
+Подробно: `DOCKER_DEPLOY.md`.
+
+Без Docker:
 
 ```bash
 cd node-backend
