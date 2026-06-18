@@ -12,9 +12,11 @@ import { h } from '../utils/html.js';
 import { logger } from '../utils/logger.js';
 import { attemptLogin, csrfField, destroySession, verifyCsrf } from './admin-auth.js';
 
-const FLOW_NODE_WIDTH = 320;
-const FLOW_NODE_HEIGHT = 330;
-const FLOW_CONNECTOR_GAP = 10;
+const FLOW_NODE_WIDTH = 300;
+const FLOW_NODE_HEIGHT = 286;
+const FLOW_CONNECTOR_GAP = 24;
+const FLOW_BOARD_WIDTH = 3720;
+const FLOW_BOARD_HEIGHT = 1400;
 
 export class AdminController {
   constructor({ session, response }) {
@@ -267,7 +269,7 @@ export class AdminController {
     const queues = await this.flowQueues(nodes);
     let body = '<section class="panel flow-panel"><div class="panel-head"><h2>Сценарий бота</h2><span class="muted">Живая карта переходов</span></div>';
     body += '<div class="flow-legend"><span><i class="legend-dot users"></i>пользователи на этапе</span><span><i class="legend-dot queue"></i>запланированные сообщения</span><span><i class="legend-line"></i>переходы по кнопкам и действиям модератора</span></div>';
-    body += '<div class="journey-board" style="--board-width: 3160px; --board-height: 1260px;">';
+    body += `<div class="journey-board" style="--board-width: ${FLOW_BOARD_WIDTH}px; --board-height: ${FLOW_BOARD_HEIGHT}px;">`;
     body += this.flowScaffold();
     body += this.flowSvg(edges, nodes);
     for (const [id, node] of Object.entries(nodes)) {
@@ -715,19 +717,19 @@ export class AdminController {
 
   flowScaffold() {
     const lanes = [
-      ['Общий путь регистрации', 112, 370],
-      ['Офлайн-гости и ресепшн', 472, 370],
-      ['Онлайн, напоминания и материалы', 822, 370],
+      ['Общий путь регистрации', 116, 356],
+      ['Офлайн-гости и ресепшн', 510, 356],
+      ['Онлайн, напоминания и материалы', 904, 356],
     ];
     const columns = [
-      ['Старт', 70],
-      ['Согласие', 450],
-      ['Анкета', 830],
-      ['Событие', 1210],
-      ['Выбор формата', 1590],
-      ['Подтверждение', 1970],
-      ['День события', 2350],
-      ['Материалы', 2730],
+      ['Старт', 96],
+      ['Согласие', 560],
+      ['Анкета', 1024],
+      ['Событие', 1488],
+      ['Выбор формата', 1952],
+      ['Подтверждение', 2416],
+      ['День события', 2880],
+      ['Материалы', 3344],
     ];
     let body = '<div class="flow-scaffold" aria-hidden="true">';
     for (const [title, top, height] of lanes) body += `<div class="flow-lane" style="top:${top}px;height:${height}px;"><span>${h(title)}</span></div>`;
@@ -737,20 +739,20 @@ export class AdminController {
 
   flowNodes() {
     return {
-      start: this.flowNodeData('1', 'Первое касание', 'Бот', 70, 150, [['/start', 'Здравствуйте! Это бот Мегаполис Медиа 👋\n\nЗдесь можно зарегистрироваться на наши митапы, эфиры и деловые встречи.\n\nДавайте познакомимся, чтобы мы могли корректно оформить вашу регистрацию.']], ['Зарегистрироваться', 'Главное меню']),
-      consent: this.flowNodeData('2', 'Согласие', 'Данные', 450, 150, [['Перед анкетой', `Перед регистрацией нужно согласие на обработку персональных данных.\n\nМы будем использовать ФИО, компанию, должность, телефон и email для регистрации на мероприятия, коммуникации, допуска к эфиру и отправки материалов.\n\nПолный текст: ${config.links.privacy}`]], ['Даю согласие', 'Главное меню']),
-      profile: this.flowNodeData('3', 'Анкета', 'Данные', 830, 150, [['Имя', 'Спасибо! Давайте познакомимся 🙂 Напишите, пожалуйста, имя и фамилию.'], ['Компания', 'Из какой вы компании?'], ['Должность', 'А какая у вас должность?'], ['Телефон', 'Поделитесь, пожалуйста, номером телефона. Можно отправить его кнопкой ниже.'], ['Email', 'И последний шаг: напишите вашу почту.'], ['Финал анкеты', 'Готово, спасибо! Теперь можно выбрать мероприятие ✨']], ['Ответ текстом', 'Отправить телефон']),
-      events: this.flowNodeData('4', 'Выбор мероприятия', 'Регистрация', 1210, 150, [['Список событий', 'Выберите мероприятие, на которое хотите зарегистрироваться.\n\nАдрес на этом шаге не показываем: человек сначала выбирает событие.'], ['Если событий нет', 'Пока ближайших мероприятий нет. Как только появится новое событие, мы обязательно расскажем 🙂']], ['Выбрать событие', 'Главное меню']),
-      format_choice: this.flowNodeData('5', 'Выбор формата', 'Регистрация', 1590, 150, [['После выбора события', 'Отлично, вот что запланировано:\n\nНазвание: {название}\nДата: {дата}\nВремя: {время}\nФормат: {офлайн + онлайн / только офлайн / только онлайн}\n\n{описание мероприятия}\n\nВыберите удобный формат участия:']], ['Прийти офлайн', 'Смотреть онлайн', 'Главное меню']),
-      offline_pending: this.flowNodeData('6A', 'Офлайн на проверке', 'Модерация', 1970, 150, [['После выбора офлайна', 'Спасибо, заявка на офлайн-участие принята 🏢\n\nОрганизаторы проверят список гостей и пришлют подтверждение. Адрес и детали площадки отправим после аппрува.']], ['Модератор: аппрув', 'Модератор: отказ']),
-      offline_rejected: this.flowNodeData('6A-', 'Офлайн отказ', 'Модерация', 2350, 150, [['Отказ модератора', 'К сожалению, сейчас не можем подтвердить офлайн-участие, но вы можете присоединиться онлайн. Так вы точно не пропустите эфир 💻']], ['Буду смотреть онлайн']),
-      offline_approved: this.flowNodeData('7A', 'Офлайн подтвержден', 'Офлайн', 1970, 500, [['Аппрув модератора', 'Готово, офлайн-участие подтверждено 🏢\n\nЖдём вас на мероприятии:\nНазвание: {название}\nДата: {дата}\nВремя: {время}\nНаш адрес: {адрес}\nФормат: офлайн\n\nПеред событием пришлём напоминание.'], ['Если есть координаты', 'После сообщения бот отправляет venue-карту с адресом площадки.']], ['Ресепшн', 'Напоминания']),
-      reception: this.flowNodeData('7B', 'Ресепшн', 'Офлайн', 2350, 500, [['Системное действие', 'Пользователю сообщение не отправляется. Модератор на ресепшне ставит галочку в админке.']], ['Отметить приход']),
-      visited: this.flowNodeData('7C', 'Пришел', 'Офлайн', 2730, 500, [['Системное действие', 'Статус нужен для отчетности и дальнейшей рассылки материалов.']], ['Постпромо']),
-      online_access: this.flowNodeData('6B', 'Онлайн зарегистрирован', 'Онлайн', 1970, 850, [['Доступ к эфиру', 'Готово, вы зарегистрированы онлайн! 💻\n\nДанные для подключения:\nЛогин: {facecast_login}\nПароль: {facecast_password}\nНазвание: {название}\nДата: {дата}\nВремя подключения: {время старта онлайна}\n\nСохраните сообщение, а перед эфиром мы напомним о старте.']], ['Ссылка на эфир', 'Напомнить логин и пароль']),
-      reminders: this.flowNodeData('8', 'Напоминания', 'Автоматизация', 2350, 850, [['Офлайн за день', 'Напоминаем о встрече завтра 🏢'], ['Офлайн за 2 часа', 'До офлайн-встречи осталось около двух часов 🙂'], ['Онлайн за 15 минут', 'Напоминаем про эфир: начинаем через 15 минут 💻'], ['Онлайн старт', 'Мы начали! Добро пожаловать в прямой эфир 💻']], ['Открыть эфир', 'Не смогу офлайн']),
-      postpromo: this.flowNodeData('9', 'Постпромо', 'Материалы', 2730, 850, [['После события', 'Спасибо, что были с нами ✨\n\nДелимся материалами и яркими моментами прошедшего мероприятия.']], ['Ссылка на эфир', 'Подборка фото']),
-      menu: this.flowNodeData('10', 'Главное меню', 'Навигация', 1210, 850, [['Главное меню', 'Что посмотрим дальше? Мы рядом в соцсетях и на сайте 🙂']], ['Телеграм канал', 'Сайт', 'Ближайшие мероприятия']),
+      start: this.flowNodeData('1', 'Первое касание', 'Бот', 96, 154, [['/start', 'Здравствуйте! Это бот Мегаполис Медиа 👋\n\nЗдесь можно зарегистрироваться на наши митапы, эфиры и деловые встречи.\n\nДавайте познакомимся, чтобы мы могли корректно оформить вашу регистрацию.']], ['Зарегистрироваться', 'Главное меню']),
+      consent: this.flowNodeData('2', 'Согласие', 'Данные', 560, 154, [['Перед анкетой', `Перед регистрацией нужно согласие на обработку персональных данных.\n\nМы будем использовать ФИО, компанию, должность, телефон и email для регистрации на мероприятия, коммуникации, допуска к эфиру и отправки материалов.\n\nПолный текст: ${config.links.privacy}`]], ['Даю согласие', 'Главное меню']),
+      profile: this.flowNodeData('3', 'Анкета', 'Данные', 1024, 154, [['Имя', 'Спасибо! Давайте познакомимся 🙂 Напишите, пожалуйста, имя и фамилию.'], ['Компания', 'Из какой вы компании?'], ['Должность', 'А какая у вас должность?'], ['Телефон', 'Поделитесь, пожалуйста, номером телефона. Можно отправить его кнопкой ниже.'], ['Email', 'И последний шаг: напишите вашу почту.'], ['Финал анкеты', 'Готово, спасибо! Теперь можно выбрать мероприятие ✨']], ['Ответ текстом', 'Отправить телефон']),
+      events: this.flowNodeData('4', 'Выбор мероприятия', 'Регистрация', 1488, 154, [['Список событий', 'Выберите мероприятие, на которое хотите зарегистрироваться.\n\nАдрес на этом шаге не показываем: человек сначала выбирает событие.'], ['Если событий нет', 'Пока ближайших мероприятий нет. Как только появится новое событие, мы обязательно расскажем 🙂']], ['Выбрать событие', 'Главное меню']),
+      format_choice: this.flowNodeData('5', 'Выбор формата', 'Регистрация', 1952, 154, [['После выбора события', 'Отлично, вот что запланировано:\n\nНазвание: {название}\nДата: {дата}\nВремя: {время}\nФормат: {офлайн + онлайн / только офлайн / только онлайн}\n\n{описание мероприятия}\n\nВыберите удобный формат участия:']], ['Прийти офлайн', 'Смотреть онлайн', 'Главное меню']),
+      offline_pending: this.flowNodeData('6A', 'Офлайн на проверке', 'Модерация', 2416, 154, [['После выбора офлайна', 'Спасибо, заявка на офлайн-участие принята 🏢\n\nОрганизаторы проверят список гостей и пришлют подтверждение. Адрес и детали площадки отправим после аппрува.']], ['Модератор: аппрув', 'Модератор: отказ']),
+      offline_rejected: this.flowNodeData('6A-', 'Офлайн отказ', 'Модерация', 2880, 154, [['Отказ модератора', 'К сожалению, сейчас не можем подтвердить офлайн-участие, но вы можете присоединиться онлайн. Так вы точно не пропустите эфир 💻']], ['Буду смотреть онлайн']),
+      offline_approved: this.flowNodeData('7A', 'Офлайн подтвержден', 'Офлайн', 2416, 548, [['Аппрув модератора', 'Готово, офлайн-участие подтверждено 🏢\n\nЖдём вас на мероприятии:\nНазвание: {название}\nДата: {дата}\nВремя: {время}\nНаш адрес: {адрес}\nФормат: офлайн\n\nПеред событием пришлём напоминание.'], ['Если есть координаты', 'После сообщения бот отправляет venue-карту с адресом площадки.']], ['Ресепшн', 'Напоминания']),
+      reception: this.flowNodeData('7B', 'Ресепшн', 'Офлайн', 2880, 548, [['Системное действие', 'Пользователю сообщение не отправляется. Модератор на ресепшне ставит галочку в админке.']], ['Отметить приход']),
+      visited: this.flowNodeData('7C', 'Пришел', 'Офлайн', 3344, 548, [['Системное действие', 'Статус нужен для отчетности и дальнейшей рассылки материалов.']], ['Постпромо']),
+      online_access: this.flowNodeData('6B', 'Онлайн зарегистрирован', 'Онлайн', 2416, 942, [['Доступ к эфиру', 'Готово, вы зарегистрированы онлайн! 💻\n\nДанные для подключения:\nЛогин: {facecast_login}\nПароль: {facecast_password}\nНазвание: {название}\nДата: {дата}\nВремя подключения: {время старта онлайна}\n\nСохраните сообщение, а перед эфиром мы напомним о старте.']], ['Ссылка на эфир', 'Напомнить логин и пароль']),
+      reminders: this.flowNodeData('8', 'Напоминания', 'Автоматизация', 2880, 942, [['Офлайн за день', 'Напоминаем о встрече завтра 🏢'], ['Офлайн за 2 часа', 'До офлайн-встречи осталось около двух часов 🙂'], ['Онлайн за 15 минут', 'Напоминаем про эфир: начинаем через 15 минут 💻'], ['Онлайн старт', 'Мы начали! Добро пожаловать в прямой эфир 💻']], ['Открыть эфир', 'Не смогу офлайн']),
+      postpromo: this.flowNodeData('9', 'Постпромо', 'Материалы', 3344, 942, [['После события', 'Спасибо, что были с нами ✨\n\nДелимся материалами и яркими моментами прошедшего мероприятия.']], ['Ссылка на эфир', 'Подборка фото']),
+      menu: this.flowNodeData('10', 'Главное меню', 'Навигация', 1488, 942, [['Главное меню', 'Что посмотрим дальше? Мы рядом в соцсетях и на сайте 🙂']], ['Телеграм канал', 'Сайт', 'Ближайшие мероприятия']),
     };
   }
 
@@ -765,30 +767,31 @@ export class AdminController {
       ['profile', 'events', 'Анкета заполнена'],
       ['events', 'format_choice', 'Выбрано событие'],
       ['format_choice', 'offline_pending', 'Прийти офлайн'],
-      ['format_choice', 'online_access', 'Смотреть онлайн', null, null, [[1920, 970]]],
+      ['format_choice', 'online_access', 'Смотреть онлайн', 'bottom', 'left', [[2102, 890], [2392, 890]]],
       ['events', 'menu', 'Главное меню', 'bottom', 'top'],
       ['offline_pending', 'offline_approved', 'Аппрув', 'bottom', 'top'],
       ['offline_pending', 'offline_rejected', 'Отказ'],
-      ['offline_rejected', 'online_access', 'Буду онлайн', 'bottom', 'top', [[2510, 430], [1940, 430], [1940, 840], [2130, 840]]],
+      ['offline_rejected', 'online_access', 'Буду онлайн', 'bottom', 'top', [[3030, 860], [2566, 860]]],
       ['offline_approved', 'reception', 'День события'],
       ['reception', 'visited', 'Пришел'],
-      ['offline_approved', 'reminders', 'Напоминания', 'bottom', 'left', [[2130, 800], [2340, 800]]],
+      ['offline_approved', 'reminders', 'Напоминания', 'bottom', 'left', [[2566, 890], [2856, 890]]],
       ['online_access', 'reminders', 'Напоминания'],
-      ['reminders', 'online_access', 'Не смогу офлайн', 'bottom', 'bottom', [[2510, 1160], [2130, 1160]]],
+      ['reminders', 'online_access', 'Не смогу офлайн', 'bottom', 'bottom', [[3030, 1320], [2566, 1320]]],
       ['reminders', 'postpromo', 'После события'],
       ['visited', 'postpromo', 'Материалы', 'bottom', 'top'],
-      ['postpromo', 'menu', 'Главное меню', 'bottom', 'bottom', [[2890, 1180], [1370, 1180]]],
+      ['postpromo', 'menu', 'Главное меню', 'bottom', 'bottom', [[3494, 1320], [1638, 1320]]],
     ].map(([from, to, label, fromAnchor = 'right', toAnchor = 'left', via = []]) => ({ from, to, label, fromAnchor, toAnchor, via }));
   }
 
   flowSvg(edges, nodes) {
-    let body = '<svg class="journey-lines" width="3160" height="1260" viewBox="0 0 3160 1260" aria-hidden="true">';
-    body += '<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3.5" orient="auto"><polygon points="0 0, 8 3.5, 0 7"></polygon></marker></defs>';
+    let body = `<svg class="journey-lines" width="${FLOW_BOARD_WIDTH}" height="${FLOW_BOARD_HEIGHT}" viewBox="0 0 ${FLOW_BOARD_WIDTH} ${FLOW_BOARD_HEIGHT}" aria-hidden="true">`;
+    body += '<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><polygon points="0 0, 10 5, 0 10"></polygon></marker></defs>';
     for (const edge of edges) {
       const points = this.flowEdgePoints(edge, nodes);
       const path = this.flowPath(points);
       const [x, y] = points[0];
       body += `<circle class="connector-dot" cx="${x}" cy="${y}" r="3"></circle><path d="${h(path)}" marker-end="url(#arrow)"><title>${h(edge.label)}</title></path>`;
+      body += this.flowEdgeLabel(edge, points);
     }
     return `${body}</svg>`;
   }
@@ -814,11 +817,56 @@ export class AdminController {
 
   flowPath(points) {
     if (points.length === 0) return '';
+    if (points.length === 1) return `M ${points[0][0]} ${points[0][1]}`;
+    const radius = 22;
     let path = `M ${points[0][0]} ${points[0][1]}`;
-    for (let index = 1; index < points.length; index += 1) {
-      path += ` L ${points[index][0]} ${points[index][1]}`;
+    for (let index = 1; index < points.length - 1; index += 1) {
+      const [prevX, prevY] = points[index - 1];
+      const [x, y] = points[index];
+      const [nextX, nextY] = points[index + 1];
+      const before = this.roundedPoint(x, y, prevX, prevY, radius);
+      const after = this.roundedPoint(x, y, nextX, nextY, radius);
+      path += ` L ${before[0]} ${before[1]} Q ${x} ${y} ${after[0]} ${after[1]}`;
     }
+    const last = points[points.length - 1];
+    path += ` L ${last[0]} ${last[1]}`;
     return path;
+  }
+
+  roundedPoint(x, y, targetX, targetY, radius) {
+    const dx = targetX - x;
+    const dy = targetY - y;
+    const distance = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
+    const offset = Math.min(radius, distance / 2);
+    return [
+      Math.round(x + (dx / distance) * offset),
+      Math.round(y + (dy / distance) * offset),
+    ];
+  }
+
+  flowEdgeLabel(edge, points) {
+    if (!edge.label || points.length < 2) return '';
+    const [x, y] = this.flowLabelPoint(points);
+    const width = Math.min(Math.max(edge.label.length * 6.6 + 18, 54), 152);
+    const height = 22;
+    return `<g class="edge-label"><rect x="${Math.round(x - width / 2)}" y="${Math.round(y - height / 2)}" width="${Math.round(width)}" height="${height}" rx="11"></rect><text x="${Math.round(x)}" y="${Math.round(y + 4)}" text-anchor="middle">${h(edge.label)}</text></g>`;
+  }
+
+  flowLabelPoint(points) {
+    let chosen = [points[0], points[1]];
+    let chosenLength = 0;
+    for (let index = 1; index < points.length; index += 1) {
+      const segment = [points[index - 1], points[index]];
+      const length = Math.hypot(segment[1][0] - segment[0][0], segment[1][1] - segment[0][1]);
+      if (length > chosenLength) {
+        chosen = segment;
+        chosenLength = length;
+      }
+    }
+    return [
+      (chosen[0][0] + chosen[1][0]) / 2,
+      (chosen[0][1] + chosen[1][1]) / 2,
+    ];
   }
 
   flowNode(id, node, users, queue) {

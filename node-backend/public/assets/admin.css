@@ -591,7 +591,7 @@ textarea {
   flex-wrap: wrap;
   gap: 16px;
   padding: 0 24px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
   color: var(--muted);
   font-size: 12px;
 }
@@ -620,7 +620,7 @@ textarea {
 .legend-line {
   width: 28px;
   height: 2px;
-  background: #8ea0b8;
+  background: #6f87a6;
   display: inline-block;
 }
 
@@ -628,7 +628,7 @@ textarea {
   position: relative;
   flex: 1;
   width: 100%;
-  height: calc(100vh - 176px);
+  height: calc(100vh - 170px);
   min-height: 560px;
   overflow: auto;
   border: 1px solid var(--line);
@@ -636,10 +636,10 @@ textarea {
   border-left: 0;
   border-radius: 0;
   background:
-    linear-gradient(#eef2f6 1px, transparent 1px),
-    linear-gradient(90deg, #eef2f6 1px, transparent 1px),
+    linear-gradient(#edf1f5 1px, transparent 1px),
+    linear-gradient(90deg, #edf1f5 1px, transparent 1px),
     #fbfcfe;
-  background-size: 40px 40px;
+  background-size: 48px 48px;
 }
 
 .journey-board::before {
@@ -660,32 +660,33 @@ textarea {
 
 .flow-lane {
   position: absolute;
-  left: 24px;
-  width: calc(var(--board-width) - 48px);
-  border: 1px solid #e6edf5;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.68);
+  left: 28px;
+  width: calc(var(--board-width) - 56px);
+  border: 1px solid #e3eaf3;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .flow-lane span {
   position: absolute;
-  left: 14px;
-  top: 12px;
-  padding: 4px 8px;
+  left: 16px;
+  top: 14px;
+  padding: 5px 10px;
   border-radius: 999px;
-  background: #eef2f6;
+  background: #f3f6fa;
   color: #475467;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
 
 .flow-column-marker {
   position: absolute;
-  top: 42px;
-  width: 320px;
-  color: #667085;
-  font-size: 12px;
+  top: 40px;
+  width: 300px;
+  color: #5f6f85;
+  font-size: 11px;
   font-weight: 700;
   text-align: center;
   text-transform: uppercase;
@@ -702,14 +703,14 @@ textarea {
 
 .journey-lines path {
   fill: none;
-  stroke: #8ea0b8;
-  stroke-width: 2.2;
+  stroke: #7890ad;
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
 .journey-lines marker polygon {
-  fill: #8ea0b8;
+  fill: #7890ad;
 }
 
 .journey-lines .connector-dot {
@@ -718,27 +719,38 @@ textarea {
   stroke-width: 2;
 }
 
-.journey-lines text {
+.edge-label rect {
+  fill: rgba(255, 255, 255, 0.92);
+  stroke: #dbe3ee;
+  stroke-width: 1;
+}
+
+.edge-label text {
   fill: #344054;
-  font-size: 11px;
-  paint-order: stroke;
-  stroke: #fbfcfe;
-  stroke-width: 5px;
-  stroke-linejoin: round;
+  font-size: 10px;
+  font-weight: 700;
 }
 
 .journey-node {
   position: absolute;
   z-index: 2;
-  width: 320px;
-  height: 330px;
+  width: 300px;
+  height: 286px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
-  padding: 10px;
-  font-size: 12px;
+  padding: 12px;
+  font-size: 11px;
   overflow: hidden;
-  box-shadow: 0 8px 20px rgba(16, 24, 40, 0.08);
+  box-shadow: 0 10px 22px rgba(16, 24, 40, 0.07);
+}
+
+.journey-node::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: var(--brand);
 }
 
 .node-head {
@@ -752,10 +764,10 @@ textarea {
 .node-phase {
   display: inline-flex;
   align-items: center;
-  min-height: 22px;
+  min-height: 21px;
   padding: 2px 7px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -770,22 +782,22 @@ textarea {
 }
 
 .journey-node h3 {
-  margin: 8px 0 5px;
+  margin: 9px 0 7px;
   font-size: 14px;
-  line-height: 1.25;
+  line-height: 1.2;
 }
 
 .node-message-list {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  margin-top: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
+  gap: 5px;
+  margin-top: 7px;
 }
 
 .node-message-list > strong {
   grid-column: 1 / -1;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   text-transform: uppercase;
 }
 
@@ -793,12 +805,11 @@ textarea {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
   width: 100%;
   border: 1px solid #dbeafe;
-  border-radius: 7px;
+  border-radius: 6px;
   background: #f8fbff;
-  padding: 6px 7px;
+  padding: 5px 6px;
   color: var(--brand-dark);
   cursor: pointer;
   font: inherit;
@@ -814,7 +825,7 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -829,7 +840,7 @@ textarea {
 .node-options {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 4px;
   margin-top: 8px;
 }
 
@@ -837,7 +848,7 @@ textarea {
   content: "Переходы";
   flex-basis: 100%;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -845,18 +856,18 @@ textarea {
 .node-options span {
   display: inline-flex;
   align-items: center;
-  min-height: 22px;
+  min-height: 20px;
   padding: 2px 6px;
   border: 1px solid var(--line);
   border-radius: 999px;
   background: #f8fafc;
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .node-people {
-  margin-top: 10px;
+  margin-top: 8px;
   border-top: 1px solid var(--line);
-  padding-top: 8px;
+  padding-top: 7px;
 }
 
 .node-people > div {
@@ -868,7 +879,7 @@ textarea {
 }
 
 .node-people strong {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--muted);
   text-transform: uppercase;
 }
@@ -876,12 +887,12 @@ textarea {
 .node-people span {
   display: inline-flex;
   align-items: center;
-  min-height: 22px;
+  min-height: 20px;
   padding: 2px 7px;
   border-radius: 999px;
   background: #edf4ff;
   color: var(--brand-dark);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -897,7 +908,7 @@ textarea {
 
 .node-people p {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .node-people ul {
@@ -908,7 +919,7 @@ textarea {
 }
 
 .node-people li {
-  font-size: 11px;
+  font-size: 10px;
   overflow-wrap: anywhere;
 }
 
