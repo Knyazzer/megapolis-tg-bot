@@ -37,7 +37,7 @@ export class FacecastClient {
     const email = this.email(person.email);
     const fullName = this.truncate(person.full_name, 64);
     const phone = this.phoneForUserreg(person.phone);
-    const response = await this.postForm(config.facecast.userregEndpoint, {
+    const body = {
       ajaj: '1',
       event_id: eventId,
       email,
@@ -54,9 +54,29 @@ export class FacecastClient {
       ]),
       ref: 'telegram-bot',
       lang: 'ru',
-    }, {
-      referer: streamUrl,
-    });
+    };
+
+    let response;
+    try {
+      response = await this.postForm(config.facecast.userregEndpoint, body, {
+        referer: streamUrl,
+      });
+    } catch (error) {
+      if (!phone || !this.isInvalidPhoneError(error)) {
+        throw error;
+      }
+
+      logger.warn('facecast rejected viewer phone, retrying without phone field', {
+        eventId,
+        status: error.status || 0,
+      });
+      response = await this.postForm(config.facecast.userregEndpoint, {
+        ...body,
+        phone: '',
+      }, {
+        referer: streamUrl,
+      });
+    }
 
     const key = this.extractViewerKey(response);
     if (!this.isSuccessResponse(response) || !key) {
@@ -414,6 +434,29 @@ export class FacecastClient {
     if (!digits) {
       return '';
     }
-    return String(value || '').trim().startsWith('+') ? `+${digits}` : digits;
+    if (digits.length === 10) {
+      return `+7${digits}`;
+    }
+    if (digits.length === 11 && digits.startsWith('8')) {
+      return `+7${digits.slice(1)}`;
+    }
+    if (digits.length >= 11) {
+      return `+${digits}`;
+    }
+    return '';
+  }
+
+  isInvalidPhoneError(error) {
+    const message = [
+      error?.message,
+      error?.payload?.message,
+      error?.payload?.error,
+      error?.payload?.err,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    return message.includes('phone') && message.includes('valid');
   }
 }
