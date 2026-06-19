@@ -23,6 +23,8 @@ import {
   startRegistrationKeyboard,
 } from './keyboards.js';
 
+const ACTIVE_OFFLINE_STATUSES = new Set(['pending', 'approved', 'visited']);
+
 export class BotController {
   constructor({ telegram }) {
     this.telegram = telegram;
@@ -218,6 +220,13 @@ export class BotController {
       if (registration && Number(registration.person_id) === Number(person.id)) {
         const event = await this.events.findById(Number(registration.event_id));
         if (event) {
+          if (
+            registration.attendance === 'offline' &&
+            ACTIVE_OFFLINE_STATUSES.has(String(registration.status || ''))
+          ) {
+            await this.ensureOfflineBackupOnlineAccess(chatId, person, event, registration);
+            return;
+          }
           if (
             registration.attendance === 'online' &&
             registration.status === 'approved' &&
@@ -479,13 +488,36 @@ export class BotController {
     await this.notifyAdminsAboutOfflineRequest(person, event, registration);
   }
 
-  async registerOnline(chatId, person, event) {
+  async registerOnline(chatId, person, event, { replaceOffline = false } = {}) {
     if (!eventSupportsOnline(event)) {
       await this.telegram.sendMessage(chatId, 'Для этого события онлайн-участие не предусмотрено. Выберите другой доступный формат, пожалуйста.', this.eventFormatKeyboard(event));
       return;
     }
 
     const existing = await this.registrations.findByPersonEvent(person.id, event.id);
+    if (
+      existing &&
+      existing.attendance === 'offline' &&
+      replaceOffline &&
+      this.facecast.isExistingPersonalAccess(existing, event, person)
+    ) {
+      let registration = await this.registrations.upsert(person.id, event.id, 'online', 'approved');
+      registration = await this.registrations.findById(registration.id);
+      await this.planner.planOnline(registration, event);
+      await this.sendOnlineAccess(chatId, event, registration);
+      return;
+    }
+
+    if (
+      existing &&
+      existing.attendance === 'offline' &&
+      ACTIVE_OFFLINE_STATUSES.has(String(existing.status || '')) &&
+      !replaceOffline
+    ) {
+      await this.ensureOfflineBackupOnlineAccess(chatId, person, event, existing);
+      return;
+    }
+
     if (
       existing &&
       existing.attendance === 'online' &&
@@ -563,7 +595,59 @@ export class BotController {
     }
 
     await this.telegram.sendMessage(chatId, 'Конечно, планы меняются. Переключаем вас на онлайн-участие 💻');
-    await this.registerOnline(chatId, person, event);
+    await this.registerOnline(chatId, person, event, { replaceOffline: true });
+  }
+
+  async ensureOfflineBackupOnlineAccess(chatId, person, event, registration) {
+    if (this.facecast.isExistingPersonalAccess(registration, event, person)) {
+      await this.sendOfflineBackupOnlineAccess(chatId, event, registration);
+      return;
+    }
+
+    let credentials;
+    try {
+      credentials = await this.facecast.registerViewer(event, person);
+    } catch (error) {
+      logger.warn('facecast backup online registration failed', {
+        eventId: event.id,
+        facecastEventId: event.facecast_event_id,
+        personId: person.id,
+        registrationId: registration.id,
+        message: error.message,
+      });
+      await this.telegram.sendMessage(
+        chatId,
+        'Офлайн-регистрация остаётся в силе. Сейчас не получилось создать запасную ссылку на онлайн-трансляцию, мы уже видим проблему и вернёмся к ней чуть позже.',
+        mainMenuKeyboard(),
+      );
+      return;
+    }
+
+    if (!this.facecast.isPersonalCredentials(credentials, event, person)) {
+      logger.warn('facecast returned unusable backup online access', {
+        eventId: event.id,
+        facecastEventId: event.facecast_event_id,
+        personId: person.id,
+        registrationId: registration.id,
+        source: credentials.source || '',
+      });
+      await this.telegram.sendMessage(
+        chatId,
+        'Офлайн-регистрация остаётся в силе. Сейчас не получилось создать персональную запасную ссылку на трансляцию, мы уже видим проблему и вернёмся к ней чуть позже.',
+        mainMenuKeyboard(),
+      );
+      return;
+    }
+
+    await this.registrations.update(registration.id, {
+      facecast_login: credentials.login,
+      facecast_password: credentials.password,
+      facecast_ticket_id: credentials.ticketId,
+      facecast_url: credentials.url,
+    });
+
+    const updatedRegistration = await this.registrations.findById(registration.id);
+    await this.sendOfflineBackupOnlineAccess(chatId, event, updatedRegistration);
   }
 
   async sendOnlineAccess(chatId, event, registration) {
@@ -581,6 +665,36 @@ export class BotController {
     const buttons = [];
     if (url) {
       buttons.push([{ text: 'Персональная ссылка на эфир', url }]);
+    } else if (registration.id) {
+      buttons.push([{ text: 'Получить ссылку', callback_data: `credentials:${registration.id}` }]);
+    }
+    buttons.push([{ text: 'Главное меню', callback_data: 'main_menu' }]);
+
+    await this.telegram.sendMessage(chatId, text, inlineKeyboard(buttons));
+  }
+
+  async sendOfflineBackupOnlineAccess(chatId, event, registration) {
+    const url = String(registration.facecast_url || '').trim();
+    const isPending = String(registration.status || '') === 'pending';
+    const intro = isPending
+      ? 'Ваша заявка на офлайн-участие остаётся на проверке 🏢'
+      : 'Вы остаётесь в списке офлайн-гостей 🏢';
+    const priority = isPending
+      ? 'Если модераторы подтвердят офлайн-участие, главным вариантом останется встреча на площадке.'
+      : 'Главным вариантом оставляем офлайн-встречу, а ссылку держите как запасной доступ.';
+    const accessLine = url
+      ? 'Запасная персональная ссылка на эфир будет в кнопке ниже.\n'
+      : 'Запасная персональная ссылка пока не сформировалась автоматически. Попробуйте получить её чуть позже или напишите организаторам.\n';
+    const text = `${intro}\n\n`
+      + `${accessLine}`
+      + `<b>Название:</b> ${h(event.title)}\n`
+      + `<b>Дата:</b> ${h(dateShort(event.date_start))}\n`
+      + `<b>Время подключения:</b> ${h(timeOnly(event.online_start || event.date_start))}\n\n`
+      + `${priority}`;
+
+    const buttons = [];
+    if (url) {
+      buttons.push([{ text: 'Запасная ссылка на эфир', url }]);
     } else if (registration.id) {
       buttons.push([{ text: 'Получить ссылку', callback_data: `credentials:${registration.id}` }]);
     }

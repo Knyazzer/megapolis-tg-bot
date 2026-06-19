@@ -1216,9 +1216,12 @@ export class AdminController {
   registrationCard(row) {
     const attendance = row.attendance === 'offline' ? 'офлайн' : 'онлайн';
     const attendanceClass = row.attendance === 'offline' ? 'offline' : 'online';
+    const hasBackupOnlineAccess = row.attendance === 'offline' && String(row.facecast_url || '').trim();
     const state = this.registrationState(row);
     let body = `<article class="registration-card ${row.archived_at ? 'is-archived' : ''}" data-registration-card data-registration-id="${Number(row.id)}" data-status="${h(state)}" data-created-at="${h(row.created_at || '')}">`;
-    body += `<div class="card-top"><span class="format-pill ${attendanceClass}">${h(attendance)}</span><span class="muted">${h(this.dateTime(row.created_at))}</span></div>`;
+    body += `<div class="card-top"><span class="format-pill ${attendanceClass}">${h(attendance)}</span>`;
+    if (hasBackupOnlineAccess) body += '<span class="format-pill online">онлайн-доступ</span>';
+    body += `<span class="muted">${h(this.dateTime(row.created_at))}</span></div>`;
     body += `<h3>${h(row.full_name)}</h3><p class="card-company">${h(row.company)}</p>`;
     if (row.position_title) body += `<p class="muted">${h(row.position_title)}</p>`;
     body += `<dl><div><dt>Событие</dt><dd>${h(row.title)}</dd></div><div><dt>Телефон</dt><dd>${h(row.phone)}</dd></div><div><dt>Email</dt><dd>${h(row.email)}</dd></div></dl>`;
@@ -1240,9 +1243,12 @@ export class AdminController {
 
   registrationTableRow(row, withActions) {
     const attendance = row.attendance === 'offline' ? 'офлайн' : 'онлайн';
+    const attendanceDetails = row.attendance === 'offline' && String(row.facecast_url || '').trim()
+      ? `${h(attendance)}<div class="muted">есть онлайн-доступ</div>`
+      : h(attendance);
     const state = this.registrationState(row);
     let body = `<tr data-registration-row data-registration-id="${Number(row.id)}" data-status="${h(state)}" data-created-at="${h(row.created_at || '')}"><td><strong>${h(row.full_name)}</strong><div class="muted">${h(row.company)}</div><div class="muted">${h(row.email)}</div></td>`;
-    body += `<td>${h(row.title)}</td><td>${h(attendance)}</td><td>${this.registrationStatusLabel(row)}</td><td>${h(this.dateTime(row.created_at))}</td>`;
+    body += `<td>${h(row.title)}</td><td>${attendanceDetails}</td><td>${this.registrationStatusLabel(row)}</td><td>${h(this.dateTime(row.created_at))}</td>`;
     if (withActions) body += `<td class="actions-cell">${this.registrationActions(row)}</td>`;
     return `${body}</tr>`;
   }
