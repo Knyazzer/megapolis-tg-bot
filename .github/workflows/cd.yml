@@ -145,3 +145,9 @@ jobs:
             docker compose -f compose.prod.yml pull
             docker compose -f compose.prod.yml up -d --remove-orphans
             docker compose -f compose.prod.yml ps
+            sleep 5
+            if ! curl -fsS http://127.0.0.1:3000/health; then
+              docker compose -f compose.prod.yml ps
+              docker compose -f compose.prod.yml logs --tail=120 app worker
+              exit 1
+            fi
