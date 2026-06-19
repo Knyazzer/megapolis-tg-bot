@@ -69,10 +69,18 @@ jobs:
             docker compose -f compose.prod.yml up -d --remove-orphans
             docker compose -f compose.prod.yml ps
 
-            sleep 6
-            if ! curl -fsS http://127.0.0.1:3000/health; then
-              echo "Health check FAILED — логи app/worker:"
+            # Ждём, пока app поднимется (migrate + старт Node), до ~90с — с ретраями.
+            ok=""
+            for i in $(seq 1 18); do
+              if curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1; then
+                ok=1
+                break
+              fi
+              sleep 5
+            done
+            if [ -z "$ok" ]; then
+              echo "Health check FAILED после ~90с ожидания — логи app/worker:"
               docker compose -f compose.prod.yml logs --tail=120 app worker
               exit 1
             fi
-            echo "Deploy OK"
+            echo "Deploy OK — health ok"
