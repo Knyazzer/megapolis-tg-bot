@@ -137,6 +137,23 @@ jobs:
               chmod 600 .env
             elif [ -s .env ]; then
               echo "GitHub production secrets are not complete; keeping existing VDS .env. Missing:$missing_env"
+              env_get() {
+                key="$1"
+                awk -v key="$key" 'index($0, key "=") == 1 { sub("^[^=]*=", ""); print; exit }' .env
+              }
+              ensure_env_alias() {
+                target="$1"
+                source="$2"
+                target_value="$(env_get "$target")"
+                source_value="$(env_get "$source")"
+                if [ -z "$target_value" ] && [ -n "$source_value" ]; then
+                  printf '%s=%s\n' "$target" "$source_value" >> .env
+                fi
+              }
+              ensure_env_alias MYSQL_DATABASE DB_DATABASE
+              ensure_env_alias MYSQL_USER DB_USERNAME
+              ensure_env_alias MYSQL_PASSWORD DB_PASSWORD
+              ensure_env_alias MYSQL_ROOT_PASSWORD DB_PASSWORD
             else
               echo "Missing required GitHub secrets/env:$missing_env"
               echo "No existing .env found on VDS. Add GitHub Environment secrets or upload /opt/megapolis-tg-bot/.env."
