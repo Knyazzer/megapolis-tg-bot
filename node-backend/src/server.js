@@ -7,6 +7,7 @@ import { AdminController } from './admin/admin-controller.js';
 import { loadSession } from './admin/admin-auth.js';
 import { BotController } from './bot/bot-controller.js';
 import { pingDb, queryOne } from './db/mysql.js';
+import { mysqlSchemaDiagnostics } from './db/schema-checks.js';
 import { TelegramClient } from './services/telegram-client.js';
 import { h } from './utils/html.js';
 import { logger } from './utils/logger.js';
@@ -126,6 +127,10 @@ async function handleHealth(response, url) {
     payload.db.ok = await pingDb();
     const row = await queryOne('SELECT COUNT(*) AS total FROM events');
     payload.db.events = Number(row?.total || 0);
+    if (url.searchParams.get('schema') === '1') {
+      payload.schema = await mysqlSchemaDiagnostics();
+      payload.ok = payload.ok && payload.schema.ok;
+    }
   } catch (error) {
     payload.ok = false;
     payload.db.error = error.message;
