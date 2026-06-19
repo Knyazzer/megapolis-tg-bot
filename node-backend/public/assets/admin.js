@@ -34,6 +34,15 @@
     });
   });
 
+  document.querySelectorAll('form[data-confirm]').forEach(function (form) {
+    form.addEventListener('submit', function (event) {
+      var message = form.getAttribute('data-confirm') || 'Подтвердите действие';
+      if (!window.confirm(message)) {
+        event.preventDefault();
+      }
+    });
+  });
+
   function refreshColumnCount(list, delta) {
     var column = list && list.closest('[data-kanban-column]');
     var count = column && column.querySelector('header strong');

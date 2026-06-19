@@ -93,6 +93,8 @@ export class AdminController {
         await this.createBroadcast(form);
       } else if (action === 'process_queue') {
         await this.processMessageQueue();
+      } else if (action === 'reset_person_history') {
+        await this.resetPersonHistory(form);
       } else if (action === 'seed_demo') {
         await this.seedDemo();
       } else if (action === 'simulator_reset') {
@@ -152,7 +154,7 @@ export class AdminController {
   async page(page, url) {
     if (page === 'events') return this.eventsPage();
     if (page === 'event_edit') return this.eventEditPage(Number(url.searchParams.get('id') || 0));
-    if (page === 'people') return this.peoplePage();
+    if (page === 'people') return this.peoplePage(url);
     if (page === 'reception') return this.receptionPage(url);
     if (page === 'broadcasts') return this.broadcastsPage(url);
     if (page === 'flow') return this.flowPage();
@@ -224,18 +226,208 @@ export class AdminController {
     return `${body}<div class="actions"><button class="button button-primary" type="submit">Сохранить</button><a class="button" href="/?page=events">Назад</a></div></form></section>`;
   }
 
-  async peoplePage() {
-    const people = await query('SELECT * FROM people ORDER BY created_at DESC LIMIT 300');
+  async peoplePage(url) {
+    const filters = this.peopleFilters(url);
+    const { people, total } = await this.peopleRows(filters);
     const histories = await this.peopleHistories(people);
-    let body = '<section class="panel"><div class="panel-head"><h2>Люди</h2><span class="muted">Последние 300 контактов</span></div>';
-    body += '<table><thead><tr><th>Контакт</th><th>Компания</th><th>Телефон</th><th>Email</th><th>Согласие</th><th>История</th></tr></thead><tbody>';
-    for (const person of people) {
-      const username = person.username ? `@${person.username}` : `ID ${person.telegram_id}`;
-      body += `<tr><td><strong>${h(person.full_name)}</strong><div class="muted">${h(username)}</div></td>`;
-      body += `<td>${h(person.company)}<div class="muted">${h(person.position_title)}</div></td><td>${h(person.phone)}</td><td>${h(person.email)}</td>`;
-      body += `<td>${person.consent_accepted_at ? '<span class="badge ok">Есть</span>' : '<span class="badge warn">Нет</span>'}</td><td>${this.personHistory(histories.get(Number(person.id)) || [])}</td></tr>`;
+    let body = '<section class="panel people-workspace">';
+    body += '<div class="panel-head people-head"><div><h2>Люди</h2><span class="muted">Контакты, регистрации и короткая история действий</span></div></div>';
+    body += this.peopleFilterPanel(filters, total, people.length);
+    if (people.length === 0) {
+      body += '<p class="empty">По этим фильтрам людей не нашли.</p>';
+      return `${body}</section>`;
     }
-    return `${body}</tbody></table></section>`;
+    body += '<div class="people-table-wrap"><table class="people-table"><thead><tr>';
+    body += `<th>${this.peopleSortLink('Контакт', 'name', filters)}</th>`;
+    body += `<th>${this.peopleSortLink('Компания', 'company', filters)}</th>`;
+    body += `<th>${this.peopleSortLink('Регистрации', 'registrations', filters)}</th>`;
+    body += `<th>${this.peopleSortLink('Активность', 'last_activity', filters)}</th>`;
+    body += '<th>Согласие</th><th>История</th><th></th></tr></thead><tbody>';
+    for (const person of people) {
+      body += this.peopleTableRow(person, histories.get(Number(person.id)) || []);
+    }
+    return `${body}</tbody></table></div></section>`;
+  }
+
+  peopleFilters(url) {
+    const consent = ['all', 'yes', 'no'].includes(url.searchParams.get('consent')) ? url.searchParams.get('consent') : 'all';
+    const activity = ['all', 'registered', 'empty', 'online', 'offline', 'visited'].includes(url.searchParams.get('activity')) ? url.searchParams.get('activity') : 'all';
+    const sort = ['created', 'last_activity', 'name', 'company', 'registrations'].includes(url.searchParams.get('sort')) ? url.searchParams.get('sort') : 'created';
+    const dir = ['asc', 'desc'].includes(url.searchParams.get('dir')) ? url.searchParams.get('dir') : 'desc';
+    return {
+      q: String(url.searchParams.get('q') || '').trim().slice(0, 80),
+      consent,
+      activity,
+      sort,
+      dir,
+    };
+  }
+
+  async peopleRows(filters) {
+    const params = {};
+    const where = this.peopleWhere(filters, params);
+    const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    const orderSql = this.peopleOrderSql(filters);
+    const aggregateSql = this.peopleAggregateSql();
+    const people = await query(
+      `SELECT p.*,
+        COALESCE(ra.registration_count, 0) AS registration_count,
+        COALESCE(ra.online_count, 0) AS online_count,
+        COALESCE(ra.offline_count, 0) AS offline_count,
+        COALESCE(ra.visited_count, 0) AS visited_count,
+        ra.last_registration_at,
+        ra.last_action_at
+       FROM people p
+       ${aggregateSql}
+       ${whereSql}
+       ${orderSql}
+       LIMIT 300`,
+      params,
+    );
+    const countRow = await queryOne(
+      `SELECT COUNT(*) AS total
+       FROM people p
+       ${aggregateSql}
+       ${whereSql}`,
+      params,
+    );
+    return { people, total: Number(countRow?.total || 0) };
+  }
+
+  peopleAggregateSql() {
+    return `LEFT JOIN (
+      SELECT person_id,
+        COALESCE(SUM(CASE WHEN archived_at IS NULL THEN 1 ELSE 0 END), 0) AS registration_count,
+        COALESCE(SUM(CASE WHEN archived_at IS NULL AND attendance = 'online' THEN 1 ELSE 0 END), 0) AS online_count,
+        COALESCE(SUM(CASE WHEN archived_at IS NULL AND attendance = 'offline' THEN 1 ELSE 0 END), 0) AS offline_count,
+        COALESCE(SUM(CASE WHEN archived_at IS NULL AND status = 'visited' THEN 1 ELSE 0 END), 0) AS visited_count,
+        MAX(CASE WHEN archived_at IS NULL THEN created_at ELSE NULL END) AS last_registration_at,
+        MAX(CASE WHEN archived_at IS NULL THEN updated_at ELSE NULL END) AS last_action_at
+      FROM registrations
+      GROUP BY person_id
+    ) ra ON ra.person_id = p.id`;
+  }
+
+  peopleWhere(filters, params) {
+    const where = [];
+    if (filters.q) {
+      params.search = `%${filters.q}%`;
+      where.push(`(
+        p.full_name LIKE :search OR
+        p.username LIKE :search OR
+        p.company LIKE :search OR
+        p.position_title LIKE :search OR
+        p.phone LIKE :search OR
+        p.email LIKE :search OR
+        p.telegram_id LIKE :search
+      )`);
+    }
+    if (filters.consent === 'yes') where.push('p.consent_accepted_at IS NOT NULL');
+    if (filters.consent === 'no') where.push('p.consent_accepted_at IS NULL');
+    if (filters.activity === 'registered') where.push('COALESCE(ra.registration_count, 0) > 0');
+    if (filters.activity === 'empty') where.push('COALESCE(ra.registration_count, 0) = 0');
+    if (filters.activity === 'online') where.push('COALESCE(ra.online_count, 0) > 0');
+    if (filters.activity === 'offline') where.push('COALESCE(ra.offline_count, 0) > 0');
+    if (filters.activity === 'visited') where.push('COALESCE(ra.visited_count, 0) > 0');
+    return where;
+  }
+
+  peopleOrderSql(filters) {
+    const direction = filters.dir === 'asc' ? 'ASC' : 'DESC';
+    const orders = {
+      created: `p.created_at ${direction}, p.id ${direction}`,
+      last_activity: `COALESCE(ra.last_action_at, p.last_seen_at, p.created_at) ${direction}, p.id DESC`,
+      name: `p.full_name ${direction}, p.username ${direction}, p.id DESC`,
+      company: `p.company ${direction}, p.full_name ASC, p.id DESC`,
+      registrations: `COALESCE(ra.registration_count, 0) ${direction}, COALESCE(ra.last_action_at, p.created_at) DESC, p.id DESC`,
+    };
+    return `ORDER BY ${orders[filters.sort] || orders.created}`;
+  }
+
+  peopleFilterPanel(filters, total, shown) {
+    const activeFilters = Boolean(filters.q || filters.consent !== 'all' || filters.activity !== 'all');
+    let body = '<div class="people-filterbar">';
+    body += `<form class="people-filter-form" method="get" data-autosubmit-select><input type="hidden" name="page" value="people"><input type="hidden" name="sort" value="${h(filters.sort)}"><input type="hidden" name="dir" value="${h(filters.dir)}">`;
+    body += `<label class="people-search"><span>Поиск</span><input name="q" value="${h(filters.q)}" placeholder="Имя, компания, телефон, email"></label>`;
+    body += `<label><span>Согласие</span><select name="consent">${this.options({ all: 'Все', yes: 'Есть', no: 'Нет' }, filters.consent)}</select></label>`;
+    body += `<label><span>Активность</span><select name="activity">${this.options({
+      all: 'Любая',
+      registered: 'Есть регистрации',
+      empty: 'Без регистраций',
+      online: 'Онлайн',
+      offline: 'Офлайн',
+      visited: 'Пришли / смотрели',
+    }, filters.activity)}</select></label>`;
+    body += '<button class="button button-primary" type="submit">Показать</button>';
+    if (activeFilters) body += '<a class="button muted-button" href="/?page=people">Сбросить</a>';
+    body += '</form>';
+    body += `<div class="people-summary"><strong>${Number(total)}</strong><span>найдено</span><b>${Number(shown)}</b><span>показано</span></div>`;
+    return `${body}</div>`;
+  }
+
+  options(options, selected) {
+    return Object.entries(options)
+      .map(([value, label]) => `<option value="${h(value)}" ${selected === value ? 'selected' : ''}>${h(label)}</option>`)
+      .join('');
+  }
+
+  peopleSortLink(label, sort, filters) {
+    const active = filters.sort === sort;
+    const nextDir = active && filters.dir === 'asc' ? 'desc' : 'asc';
+    const arrow = active ? (filters.dir === 'asc' ? '↑' : '↓') : '';
+    return `<a class="sort-link ${active ? 'active' : ''}" href="${h(this.peopleUrl({ ...filters, sort, dir: nextDir }))}"><span>${h(label)}</span>${arrow ? `<b>${h(arrow)}</b>` : ''}</a>`;
+  }
+
+  peopleUrl(filters) {
+    const params = new URLSearchParams({ page: 'people' });
+    if (filters.q) params.set('q', filters.q);
+    if (filters.consent && filters.consent !== 'all') params.set('consent', filters.consent);
+    if (filters.activity && filters.activity !== 'all') params.set('activity', filters.activity);
+    if (filters.sort && filters.sort !== 'created') params.set('sort', filters.sort);
+    if (filters.dir && filters.dir !== 'desc') params.set('dir', filters.dir);
+    return `/?${params.toString()}`;
+  }
+
+  peopleTableRow(person, history) {
+    const name = person.full_name || person.first_name || person.username || `ID ${person.telegram_id}`;
+    const username = person.username ? `@${person.username}` : `ID ${person.telegram_id}`;
+    const lastActivity = person.last_action_at || person.last_seen_at || person.created_at;
+    let body = `<tr><td><div class="person-main"><strong>${h(name)}</strong><span>${h(username)}</span></div>`;
+    body += `<div class="person-contact">${person.phone ? `<span>${h(person.phone)}</span>` : ''}${person.email ? `<span>${h(person.email)}</span>` : ''}</div></td>`;
+    body += `<td><span class="cell-main">${h(person.company || '—')}</span>${person.position_title ? `<span class="cell-sub">${h(person.position_title)}</span>` : ''}</td>`;
+    body += `<td>${this.peopleRegistrationSummary(person)}</td>`;
+    body += `<td><span class="cell-main">${h(this.dateTime(lastActivity))}</span><span class="cell-sub">${person.last_action_at ? 'по регистрации' : 'в боте'}</span></td>`;
+    body += `<td>${person.consent_accepted_at ? '<span class="badge ok">Есть</span>' : '<span class="badge warn">Нет</span>'}</td>`;
+    body += `<td>${this.personHistoryPreview(history)}</td><td class="people-actions">${this.resetPersonForm(person)}</td></tr>`;
+    return body;
+  }
+
+  peopleRegistrationSummary(person) {
+    const total = Number(person.registration_count || 0);
+    if (total === 0) return '<span class="muted">Нет</span>';
+    const online = Number(person.online_count || 0);
+    const offline = Number(person.offline_count || 0);
+    const visited = Number(person.visited_count || 0);
+    let body = `<div class="people-stats"><span class="stat-pill primary">${total}</span>`;
+    if (online > 0) body += `<span class="stat-pill">онлайн ${online}</span>`;
+    if (offline > 0) body += `<span class="stat-pill">офлайн ${offline}</span>`;
+    if (visited > 0) body += `<span class="stat-pill ok">пришли ${visited}</span>`;
+    return `${body}</div>`;
+  }
+
+  personHistoryPreview(entries) {
+    if (entries.length === 0) {
+      return '<span class="muted">Нет действий</span>';
+    }
+    const latest = entries[0];
+    return `<details class="person-history-details"><summary><strong>${h(latest.label)}</strong><span>${h(this.dateTime(latest.date))}</span></summary>${this.personHistory(entries)}</details>`;
+  }
+
+  resetPersonForm(person) {
+    const name = String(person.full_name || person.username || person.telegram_id || 'контакт').trim();
+    const confirmText = `Сбросить историю общения с ботом для ${name}? Контакт, регистрации и запланированные сообщения будут удалены из нашей базы.`;
+    const returnUrl = this.currentUrl && this.currentUrl.startsWith('/?page=people') ? this.currentUrl : '/?page=people';
+    return `<form method="post" class="inline-form" data-confirm="${h(confirmText)}">${csrfField(this.session)}<input type="hidden" name="action" value="reset_person_history"><input type="hidden" name="_return" value="${h(returnUrl)}"><input type="hidden" name="id" value="${Number(person.id)}"><button class="button danger small-button" type="submit">Сбросить</button></form>`;
   }
 
   async peopleHistories(people) {
@@ -458,7 +650,7 @@ export class AdminController {
     body += '<div class="simulator-grid">';
     body += '<aside class="simulator-side">';
     body += `<div class="simulator-stat"><span>Тестовый Telegram ID</span><strong>${Number(simulator.telegramId)}</strong></div>`;
-    body += `<div class="simulator-stat"><span>Состояние профиля</span><strong>${h(person?.state || 'новый')}</strong></div>`;
+    body += `<div class="simulator-stat"><span>Состояние профиля</span><strong>${h(this.profileStateLabel(person?.state))}</strong></div>`;
     body += `<div class="simulator-stat"><span>Последняя регистрация</span><strong>${registration ? `${h(registration.title)} · ${h(this.registrationStatusPlain(registration))}` : 'нет'}</strong></div>`;
     body += `<form method="post" class="simulator-action">${csrfField(this.session)}<input type="hidden" name="action" value="simulator_reset"><input type="hidden" name="_return" value="/?page=simulator"><button class="button danger" type="submit">Сбросить тестовый чат</button></form>`;
     body += `<form method="post" class="simulator-action">${csrfField(this.session)}<input type="hidden" name="action" value="simulator_start"><input type="hidden" name="_return" value="/?page=simulator"><button class="button button-primary" type="submit">Запустить /start</button></form>`;
@@ -472,6 +664,7 @@ export class AdminController {
       for (const message of simulator.history) body += this.simulatorBubble(message);
     }
     body += '</div>';
+    body += this.simulatorReplyKeyboard(this.simulatorCurrentReplyKeyboard(simulator.history));
     body += `<form method="post" class="sim-chat-form">${csrfField(this.session)}<input type="hidden" name="action" value="simulator_send"><input type="hidden" name="_return" value="/?page=simulator"><input name="text" placeholder="Написать сообщение" autocomplete="off"><button class="button button-primary" type="submit">Отправить</button></form>`;
     body += '</div></div></section>';
     return body;
@@ -494,6 +687,16 @@ export class AdminController {
     }
     simulator.history = [];
     this.flash('Тестовый чат сброшен');
+  }
+
+  async resetPersonHistory(form) {
+    const id = Number(form.id || 0);
+    const person = await queryOne('SELECT id, full_name, username, telegram_id FROM people WHERE id = :id LIMIT 1', { id });
+    if (!person) throw new Error('Контакт не найден');
+
+    await execute('DELETE FROM people WHERE id = :id', { id: person.id });
+    const label = person.full_name || (person.username ? `@${person.username}` : `ID ${person.telegram_id}`);
+    this.flash(`История общения сброшена: ${label}`);
   }
 
   async sendSimulatorMessage(text) {
@@ -811,9 +1014,9 @@ export class AdminController {
       where.push('r.event_id = :eventId', 'r.archived_at IS NULL');
     }
     if (audience === 'event_online') {
-      where.push("r.attendance = 'online'", "r.status = 'approved'");
+      where.push("r.attendance = 'online'", "r.status IN ('approved','visited')");
     } else if (audience === 'event_offline_approved') {
-      where.push("r.attendance = 'offline'", "r.status = 'approved'");
+      where.push("r.attendance = 'offline'", "r.status IN ('approved','visited')");
     } else if (audience === 'event_offline_pending') {
       where.push("r.attendance = 'offline'", "r.status = 'pending'");
     } else if (audience === 'event_all') {
@@ -963,14 +1166,10 @@ export class AdminController {
   registrationsKanban(registrations, view) {
     const columns = view === 'archived'
       ? { archived: 'Архив' }
-      : view === 'online'
-      ? { online: 'Онлайн зарегистрированы' }
-      : view === 'offline'
-        ? { pending: 'На проверке', approved: 'Офлайн подтверждены', visited: 'Пришли', rejected: 'Отказ', cancelled: 'Отменены', no_show: 'Не пришли' }
-        : { online: 'Онлайн', pending: 'На проверке', approved: 'Офлайн подтверждены', visited: 'Пришли', rejected: 'Отказ', cancelled: 'Отменены', no_show: 'Не пришли' };
+      : this.registrationKanbanColumns();
     const grouped = Object.fromEntries(Object.keys(columns).map((key) => [key, []]));
     for (const row of registrations) {
-      let key = view === 'archived' ? 'archived' : (row.attendance === 'online' ? 'online' : (Object.hasOwn(grouped, row.status) ? row.status : 'cancelled'));
+      let key = this.registrationState(row);
       if (!Object.hasOwn(grouped, key)) key = Object.keys(grouped)[0];
       grouped[key].push(row);
     }
@@ -983,6 +1182,17 @@ export class AdminController {
       body += '</div></section>';
     }
     return `${body}</div>`;
+  }
+
+  registrationKanbanColumns() {
+    return {
+      pending: 'На проверке',
+      approved: 'Зарегистрированы',
+      visited: 'Пришли / смотрели',
+      no_show: 'Не пришли / не смотрели',
+      rejected: 'Отказ',
+      cancelled: 'Отменены',
+    };
   }
 
   async registrationRow(id) {
@@ -999,7 +1209,8 @@ export class AdminController {
 
   registrationState(row) {
     if (row.archived_at) return 'archived';
-    return row.attendance === 'online' ? 'online' : row.status;
+    const status = String(row.status || '');
+    return Object.hasOwn(this.registrationKanbanColumns(), status) ? status : 'cancelled';
   }
 
   registrationCard(row) {
@@ -1076,7 +1287,7 @@ export class AdminController {
 
   registrationActions(row) {
     if (row.archived_at) {
-      return this.registrationActionForm(row, 'restore_registration', 'Восстановить', 'button button-primary', row.attendance === 'online' ? 'online' : row.status);
+      return this.registrationActionForm(row, 'restore_registration', 'Восстановить', 'button button-primary', this.registrationState({ ...row, archived_at: null }));
     }
 
     const actions = [];
@@ -1139,12 +1350,13 @@ export class AdminController {
     return `<span class="badge">${h(status || 'queued')}</span>`;
   }
 
-  statusLabel(status) {
+  statusLabel(status, attendance = '') {
+    const isOnline = attendance === 'online';
     const labels = {
       pending: '<span class="badge warn">На проверке</span>',
-      approved: '<span class="badge ok">Подтверждено</span>',
-      visited: '<span class="badge ok">Пришел</span>',
-      no_show: '<span class="badge danger">Не пришел</span>',
+      approved: '<span class="badge ok">Зарегистрирован</span>',
+      visited: `<span class="badge ok">${isOnline ? 'Смотрел' : 'Пришел'}</span>`,
+      no_show: `<span class="badge danger">${isOnline ? 'Не смотрел' : 'Не пришел'}</span>`,
       rejected: '<span class="badge danger">Отказ</span>',
       cancelled: '<span class="badge">Отменено</span>',
     };
@@ -1153,8 +1365,7 @@ export class AdminController {
 
   registrationStatusLabel(row) {
     if (row.archived_at) return '<span class="badge">Архив</span>';
-    if (row.attendance === 'online' && row.status === 'approved') return '<span class="badge ok">Зарегистрирован</span>';
-    return this.statusLabel(row.status);
+    return this.statusLabel(row.status, row.attendance);
   }
 
   input(label, name, value = '', required = false, type = 'text') {
@@ -1189,12 +1400,12 @@ export class AdminController {
 
   registrationStatusPlain(row) {
     if (row.archived_at) return 'в архиве';
-    if (row.attendance === 'online' && row.status === 'approved') return 'онлайн зарегистрирован';
+    const isOnline = row.attendance === 'online';
     const labels = {
       pending: 'на проверке',
-      approved: 'подтверждено',
-      visited: 'пришел',
-      no_show: 'не пришел',
+      approved: 'зарегистрирован',
+      visited: isOnline ? 'смотрел' : 'пришел',
+      no_show: isOnline ? 'не смотрел' : 'не пришел',
       rejected: 'отказ',
       cancelled: 'отменено',
     };
@@ -1256,11 +1467,11 @@ export class AdminController {
     if (message.media) {
       body += `<div class="sim-media">${h(message.media)}</div>`;
     }
-    body += this.simulatorButtons(message.replyMarkup);
+    body += this.simulatorInlineButtons(message.replyMarkup);
     return `${body}</article>`;
   }
 
-  simulatorButtons(replyMarkup = {}) {
+  simulatorInlineButtons(replyMarkup = {}) {
     if (!replyMarkup || Object.keys(replyMarkup).length === 0) {
       return '';
     }
@@ -1279,9 +1490,31 @@ export class AdminController {
       return `${body}</div>`;
     }
 
+    return '';
+  }
+
+  simulatorCurrentReplyKeyboard(history = []) {
+    let current = null;
+    for (const message of history) {
+      const replyMarkup = message.replyMarkup || {};
+      if (replyMarkup.remove_keyboard) {
+        current = null;
+      } else if (Array.isArray(replyMarkup.keyboard)) {
+        current = replyMarkup;
+      }
+    }
+    return current;
+  }
+
+  simulatorReplyKeyboard(replyMarkup = {}) {
+    if (!replyMarkup || !Array.isArray(replyMarkup.keyboard)) {
+      return '';
+    }
+
+    let body = '<div class="sim-reply-keyboard" aria-label="Текущая клавиатура Telegram">';
     if (Array.isArray(replyMarkup.keyboard)) {
-      let body = '<div class="sim-buttons">';
       for (const row of replyMarkup.keyboard) {
+        body += '<div class="sim-reply-row">';
         for (const button of row) {
           const text = typeof button === 'string' ? button : button.text;
           const action = button.request_contact ? 'simulator_contact' : 'simulator_send';
@@ -1289,11 +1522,25 @@ export class AdminController {
           if (!button.request_contact) body += `<input type="hidden" name="text" value="${h(text)}">`;
           body += `<button class="sim-button" type="submit">${h(text)}</button></form>`;
         }
+        body += '</div>';
       }
-      return `${body}</div>`;
     }
 
-    return '';
+    return `${body}</div>`;
+  }
+
+  profileStateLabel(state) {
+    const labels = {
+      new: 'новый',
+      awaiting_consent: 'ждём согласие',
+      ask_name: 'ждём имя',
+      ask_company: 'ждём компанию',
+      ask_position: 'ждём должность',
+      ask_phone: 'ждём телефон',
+      ask_email: 'ждём email',
+      registered: 'анкета заполнена',
+    };
+    return labels[state] || state || 'новый';
   }
 
   telegramHtml(text) {

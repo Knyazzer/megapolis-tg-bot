@@ -25,6 +25,18 @@ export class RegistrationsRepository {
     );
   }
 
+  async listByPerson(personId) {
+    return query(
+      `SELECT r.*, e.title, e.date_start, e.date_end, e.online_start, e.address
+       FROM registrations r
+       JOIN events e ON e.id = r.event_id
+       WHERE r.person_id = :personId AND r.archived_at IS NULL
+       ORDER BY e.date_start ASC, r.created_at DESC
+       LIMIT 10`,
+      { personId },
+    );
+  }
+
   async upsert(personId, eventId, attendance, status) {
     const now = nowSql();
     if (isSqlite()) {
