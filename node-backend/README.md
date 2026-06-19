@@ -57,10 +57,11 @@ npm start
 - `ADMIN_TELEGRAM_IDS` - Telegram ID модераторов через запятую.
 - `PRIVACY_URL=https://martis.pro/privacy.php`.
 - `FACECAST_UID` и `FACECAST_API_KEY`.
-- `FACECAST_REGISTRATION_ENDPOINT=insert_key`.
+- `FACECAST_REGISTRATION_MODE=userreg`.
+- `FACECAST_USERREG_ENDPOINT=https://kassa.facecast.net/api/viewers/register`.
 - `FACECAST_CHANNEL_ID=11110`.
 - `FACECAST_DEFAULT_STREAM_URL=https://facecast.net/w/6k2njf`.
-- `FACECAST_DIRECT_LINK_FALLBACK=true`, если текущее событие Facecast работает в режиме сбора контактов, а не в режиме мультипаролей.
+- `FACECAST_ACCESS_QUERY_PARAM=key`.
 - `FACECAST_DEMO_MODE=false` для живой онлайн-регистрации.
 
 Хеш пароля админки можно сгенерировать без PHP:

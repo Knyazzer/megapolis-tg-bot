@@ -212,6 +212,7 @@ function ensureSqliteSchema(database) {
       status TEXT NOT NULL DEFAULT 'pending',
       facecast_login TEXT NULL,
       facecast_password TEXT NULL,
+      facecast_ticket_id TEXT NULL,
       facecast_url TEXT NULL,
       rejection_reason TEXT NULL,
       approved_at TEXT NULL,
@@ -281,6 +282,7 @@ function ensureSqliteSchema(database) {
   `);
 
   ensureSqliteColumn(database, 'registrations', 'archived_at', 'TEXT NULL');
+  ensureSqliteColumn(database, 'registrations', 'facecast_ticket_id', 'TEXT NULL');
   database.exec('CREATE INDEX IF NOT EXISTS idx_registrations_archived ON registrations (archived_at)');
 
   const count = database.prepare('SELECT COUNT(*) AS total FROM events').get();

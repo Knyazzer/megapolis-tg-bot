@@ -61,15 +61,16 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
 
 ## Facecast
 
-Онлайн-регистрация подключена через Facecast API `https://facecast.net/api/v1`.
+Онлайн-регистрация подключена к режиму Facecast "Сбор контактов": бот отправляет контакт в регистрационную таблицу Facecast и получает персональный `key` для ссылки просмотра.
 Для события "Митап: Человек труда" в `.env` используются:
 
 - `FACECAST_UID`
 - `FACECAST_API_KEY`
-- `FACECAST_REGISTRATION_ENDPOINT=insert_key`
+- `FACECAST_REGISTRATION_MODE=userreg`
+- `FACECAST_USERREG_ENDPOINT=https://kassa.facecast.net/api/viewers/register`
 - `FACECAST_CHANNEL_ID=11110`
 - `FACECAST_DEFAULT_STREAM_URL=https://facecast.net/w/6k2njf`
-- `FACECAST_DIRECT_LINK_FALLBACK=true`
+- `FACECAST_ACCESS_QUERY_PARAM=key`
 - `FACECAST_DEMO_MODE=false` на продакшене
 
-Метод `insert_key` создает персональный пароль для эфира, если событие Facecast работает в режиме с паролями. Если Facecast отвечает, что текущий режим события не поддерживает пароли, бот сохраняет онлайн-регистрацию и отправляет прямую ссылку на эфир.
+Для зрителя бот отправляет кнопку с персональной ссылкой вида `https://facecast.net/w/6k2njf?key=...`. Старый режим `insert_key` оставлен в коде только как запасной вариант для эфиров Facecast с паролями.

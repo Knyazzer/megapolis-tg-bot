@@ -49,10 +49,11 @@ nano .env
 - `TELEGRAM_WEBHOOK_SECRET`
 - `ADMIN_TELEGRAM_IDS`, если нужны уведомления модераторам
 - `FACECAST_UID` и `FACECAST_API_KEY`
-- `FACECAST_REGISTRATION_ENDPOINT=insert_key`
+- `FACECAST_REGISTRATION_MODE=userreg`
+- `FACECAST_USERREG_ENDPOINT=https://kassa.facecast.net/api/viewers/register`
 - `FACECAST_CHANNEL_ID=11110`
 - `FACECAST_DEFAULT_STREAM_URL=https://facecast.net/w/6k2njf`
-- `FACECAST_DIRECT_LINK_FALLBACK=true` для текущего режима Facecast "Сбор контактов"
+- `FACECAST_ACCESS_QUERY_PARAM=key`
 - `FACECAST_DEMO_MODE=false`
 
 Хеш пароля админки можно получить локально или на сервере:
@@ -78,6 +79,7 @@ docker compose logs -f app
 - `database/schema.sql`
 - `database/seed.sql`
 - `database/migrations/2026_06_18_add_photo_broadcast_type.sql`
+- `database/migrations/2026_06_19_add_facecast_ticket_id.sql`
 
 Важно: init SQL выполняется только при пустом volume `mysql_data`. Если нужно пересоздать тестовую базу с нуля:
 

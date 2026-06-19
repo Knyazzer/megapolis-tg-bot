@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS registrations (
   status ENUM('pending','approved','rejected','cancelled','visited','no_show') NOT NULL DEFAULT 'pending',
   facecast_login VARCHAR(255) NULL,
   facecast_password VARCHAR(255) NULL,
+  facecast_ticket_id VARCHAR(255) NULL,
   facecast_url VARCHAR(500) NULL,
   rejection_reason VARCHAR(500) NULL,
   approved_at DATETIME NULL,

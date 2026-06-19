@@ -17,9 +17,62 @@ export class FacecastClient {
       return this.demoCredentials(event, person);
     }
 
+    if (this.registrationMode() === 'userreg') {
+      return this.registerUserregViewer(event, person);
+    }
+
+    return this.registerKeyViewer(event, person);
+  }
+
+  async registerUserregViewer(event, person) {
+    const eventId = String(event.facecast_event_id || '').trim();
+    const streamUrl = String(event.facecast_url || config.facecast.defaultStreamUrl || '');
+    if (!eventId) {
+      throw new FacecastApiError('Facecast event_id is empty');
+    }
+
+    const email = this.email(person.email);
+    const fullName = this.truncate(person.full_name, 64);
+    const phone = this.phoneForUserreg(person.phone);
+    const response = await this.postForm(config.facecast.userregEndpoint, {
+      ajaj: '1',
+      event_id: eventId,
+      email,
+      phone,
+      user_name: fullName,
+      user_chat_name: fullName,
+      use_name_in_chat: 'true',
+      viewer_data: JSON.stringify([
+        fullName,
+        email,
+        this.truncate(person.company, 64),
+        this.truncate(person.position_title, 64),
+        phone || this.truncate(person.phone, 32),
+      ]),
+      ref: 'telegram-bot',
+      lang: 'ru',
+    }, {
+      referer: streamUrl,
+    });
+
+    if (!response?.ok || !response?.key) {
+      throw new FacecastApiError('Facecast did not return a personal viewer key', {
+        payload: response,
+      });
+    }
+
+    const key = String(response.key);
+    return {
+      login: email,
+      password: key,
+      ticketId: String(response.ticket_id || ''),
+      url: this.viewerUrl(streamUrl, key, config.facecast.accessQueryParam || 'key'),
+    };
+  }
+
+  async registerKeyViewer(event, person) {
     const password = this.viewerPassword(event, person);
     const streamUrl = String(event.facecast_url || config.facecast.defaultStreamUrl || '');
-
     try {
       await this.insertKey(event, person, password);
     } catch (error) {
@@ -40,7 +93,8 @@ export class FacecastClient {
     return {
       login: String(person.email || ''),
       password,
-      url: this.viewerUrl(streamUrl, password),
+      ticketId: '',
+      url: this.viewerUrl(streamUrl, password, config.facecast.passwordQueryParam || 'password'),
     };
   }
 
@@ -70,14 +124,21 @@ export class FacecastClient {
     });
   }
 
-  async postForm(endpoint, body, { duplicateIsSuccess = false } = {}) {
-    const url = `${config.facecast.apiBase}/${String(endpoint).replace(/^\/+/, '')}`;
+  async postForm(endpoint, body, { duplicateIsSuccess = false, referer = '' } = {}) {
+    const url = this.endpointUrl(endpoint);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 25000);
+    const headers = { Accept: 'application/json' };
+    if (referer) {
+      headers.Origin = 'https://facecast.net';
+      headers.Referer = referer;
+    }
+
     try {
       const response = await fetch(url, {
         method: 'POST',
         body: new URLSearchParams(body),
+        headers,
         signal: controller.signal,
       });
 
@@ -118,7 +179,10 @@ export class FacecastClient {
     return {
       login: String(person.email || `viewer-${person.telegram_id}`),
       password,
-      url: this.viewerUrl(streamUrl, password),
+      ticketId: '',
+      url: this.viewerUrl(streamUrl, password, this.registrationMode() === 'userreg'
+        ? config.facecast.accessQueryParam || 'key'
+        : config.facecast.passwordQueryParam || 'password'),
     };
   }
 
@@ -131,19 +195,37 @@ export class FacecastClient {
     return `MM${seed}`;
   }
 
-  viewerUrl(streamUrl, password) {
-    if (!streamUrl || !password) {
+  viewerUrl(streamUrl, key, queryParam) {
+    if (!streamUrl || !key) {
       return streamUrl;
     }
+    const param = queryParam || config.facecast.accessQueryParam || 'key';
 
     try {
       const url = new URL(streamUrl);
-      url.searchParams.set(config.facecast.passwordQueryParam || 'password', password);
+      url.searchParams.set(param, key);
       return url.toString();
     } catch {
       const separator = streamUrl.includes('?') ? '&' : '?';
-      return `${streamUrl}${separator}${encodeURIComponent(config.facecast.passwordQueryParam || 'password')}=${encodeURIComponent(password)}`;
+      return `${streamUrl}${separator}${encodeURIComponent(param)}=${encodeURIComponent(key)}`;
     }
+  }
+
+  endpointUrl(endpoint) {
+    const raw = String(endpoint || '').trim();
+    if (/^https?:\/\//i.test(raw)) {
+      return raw;
+    }
+    return `${config.facecast.apiBase}/${raw.replace(/^\/+/, '')}`;
+  }
+
+  registrationMode() {
+    const mode = String(config.facecast.registrationMode || 'userreg').toLowerCase();
+    return mode === 'insert_key' || mode === 'key' || mode === 'password' ? 'insert_key' : 'userreg';
+  }
+
+  email(value) {
+    return this.truncate(String(value || '').trim().toLowerCase(), 64);
   }
 
   truncate(value, max) {
@@ -157,5 +239,13 @@ export class FacecastClient {
       return '';
     }
     return digits;
+  }
+
+  phoneForUserreg(value) {
+    const digits = this.phone(value);
+    if (!digits) {
+      return '';
+    }
+    return String(value || '').trim().startsWith('+') ? `+${digits}` : digits;
   }
 }
