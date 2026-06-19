@@ -40,131 +40,39 @@ jobs:
   deploy:
     needs: build-push
     runs-on: ubuntu-latest
-    # Гейт: прод-деплой требует ручного аппрува (GitHub Environment "production").
+    # Гейт прод-деплоя: GitHub Environment "production". Включи в нём Required reviewers,
+    # чтобы каждый деплой ждал ручного аппрува владельца.
     environment: production
     steps:
       - name: Deploy to VDS over SSH
         uses: appleboy/ssh-action@v1.2.0
-        env:
-          APP_URL: https://bot.knzteam.ru
-          APP_BIND: 127.0.0.1
-          APP_PORT: 3000
-          APP_TIMEZONE: Europe/Moscow
-          MYSQL_DATABASE: ${{ secrets.MYSQL_DATABASE }}
-          MYSQL_USER: ${{ secrets.MYSQL_USER }}
-          MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
-          MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}
-          ADMIN_LOGIN: ${{ secrets.ADMIN_LOGIN }}
-          ADMIN_PASSWORD_HASH: ${{ secrets.ADMIN_PASSWORD_HASH }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
-          TELEGRAM_REPLY_MODE: webhook
-          TELEGRAM_DRY_RUN: false
-          ADMIN_TELEGRAM_IDS: ${{ secrets.ADMIN_TELEGRAM_IDS }}
-          FACECAST_API_BASE: https://facecast.net/api/v1
-          FACECAST_UID: ${{ secrets.FACECAST_UID }}
-          FACECAST_API_KEY: ${{ secrets.FACECAST_API_KEY }}
-          FACECAST_API_TOKEN: ${{ secrets.FACECAST_API_TOKEN }}
-          FACECAST_REGISTRATION_MODE: userreg
-          FACECAST_REGISTRATION_ENDPOINT: insert_key
-          FACECAST_USERREG_ENDPOINT: https://kassa.facecast.net/api/viewers/register
-          FACECAST_CHANNEL_ID: "11110"
-          FACECAST_DEFAULT_STREAM_URL: https://facecast.net/w/6k2njf
-          FACECAST_ACCESS_QUERY_PARAM: key
-          FACECAST_PASSWORD_QUERY_PARAM: password
-          FACECAST_DIRECT_LINK_FALLBACK: false
-          FACECAST_DEMO_MODE: false
-          WORKER_INTERVAL_MS: 60000
-          TELEGRAM_CHANNEL_URL: https://t.me/megapolismedia
-          COMPANY_SITE_URL: https://megapolis.media
-          PRIVACY_URL: https://bot.knzteam.ru/privacy
         with:
           host: ${{ secrets.VDS_HOST }}
           username: root
           key: ${{ secrets.VDS_SSH_KEY }}
-          envs: APP_URL,APP_BIND,APP_PORT,APP_TIMEZONE,MYSQL_DATABASE,MYSQL_USER,MYSQL_PASSWORD,MYSQL_ROOT_PASSWORD,ADMIN_LOGIN,ADMIN_PASSWORD_HASH,TELEGRAM_BOT_TOKEN,TELEGRAM_WEBHOOK_SECRET,TELEGRAM_REPLY_MODE,TELEGRAM_DRY_RUN,ADMIN_TELEGRAM_IDS,FACECAST_API_BASE,FACECAST_UID,FACECAST_API_KEY,FACECAST_API_TOKEN,FACECAST_REGISTRATION_MODE,FACECAST_REGISTRATION_ENDPOINT,FACECAST_USERREG_ENDPOINT,FACECAST_CHANNEL_ID,FACECAST_DEFAULT_STREAM_URL,FACECAST_ACCESS_QUERY_PARAM,FACECAST_PASSWORD_QUERY_PARAM,FACECAST_DIRECT_LINK_FALLBACK,FACECAST_DEMO_MODE,WORKER_INTERVAL_MS,TELEGRAM_CHANNEL_URL,COMPANY_SITE_URL,PRIVACY_URL
           script: |
             set -e
             cd /opt/megapolis-tg-bot
-            git fetch origin
-            git reset --hard origin/master
-            missing_env=""
-            for name in MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD ADMIN_PASSWORD_HASH TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET FACECAST_UID FACECAST_API_KEY; do
-              eval "value=\${$name:-}"
-              if [ -z "$value" ]; then
-                missing_env="$missing_env $name"
-              fi
-            done
 
-            if [ -z "$missing_env" ]; then
-              ADMIN_PASSWORD_HASH_COMPOSE="$(printf '%s' "$ADMIN_PASSWORD_HASH" | sed 's/\$/$$/g')"
-              {
-                printf '%s\n' 'COMPOSE_PROJECT_NAME=megapolis_tg_bot'
-                printf '%s\n' 'IMAGE_TAG=latest'
-                printf 'APP_URL=%s\n' "$APP_URL"
-                printf 'APP_BIND=%s\n' "$APP_BIND"
-                printf 'APP_PORT=%s\n' "$APP_PORT"
-                printf 'APP_TIMEZONE=%s\n' "$APP_TIMEZONE"
-                printf 'MYSQL_DATABASE=%s\n' "$MYSQL_DATABASE"
-                printf 'MYSQL_USER=%s\n' "$MYSQL_USER"
-                printf 'MYSQL_PASSWORD=%s\n' "$MYSQL_PASSWORD"
-                printf 'MYSQL_ROOT_PASSWORD=%s\n' "$MYSQL_ROOT_PASSWORD"
-                printf 'ADMIN_LOGIN=%s\n' "${ADMIN_LOGIN:-admin}"
-                printf 'ADMIN_PASSWORD_HASH=%s\n' "$ADMIN_PASSWORD_HASH_COMPOSE"
-                printf 'TELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN"
-                printf 'TELEGRAM_WEBHOOK_SECRET=%s\n' "$TELEGRAM_WEBHOOK_SECRET"
-                printf 'TELEGRAM_REPLY_MODE=%s\n' "$TELEGRAM_REPLY_MODE"
-                printf 'TELEGRAM_DRY_RUN=%s\n' "$TELEGRAM_DRY_RUN"
-                printf 'ADMIN_TELEGRAM_IDS=%s\n' "$ADMIN_TELEGRAM_IDS"
-                printf 'FACECAST_API_BASE=%s\n' "$FACECAST_API_BASE"
-                printf 'FACECAST_UID=%s\n' "$FACECAST_UID"
-                printf 'FACECAST_API_KEY=%s\n' "$FACECAST_API_KEY"
-                printf 'FACECAST_API_TOKEN=%s\n' "$FACECAST_API_TOKEN"
-                printf 'FACECAST_REGISTRATION_MODE=%s\n' "$FACECAST_REGISTRATION_MODE"
-                printf 'FACECAST_REGISTRATION_ENDPOINT=%s\n' "$FACECAST_REGISTRATION_ENDPOINT"
-                printf 'FACECAST_USERREG_ENDPOINT=%s\n' "$FACECAST_USERREG_ENDPOINT"
-                printf 'FACECAST_CHANNEL_ID=%s\n' "$FACECAST_CHANNEL_ID"
-                printf 'FACECAST_DEFAULT_STREAM_URL=%s\n' "$FACECAST_DEFAULT_STREAM_URL"
-                printf 'FACECAST_ACCESS_QUERY_PARAM=%s\n' "$FACECAST_ACCESS_QUERY_PARAM"
-                printf 'FACECAST_PASSWORD_QUERY_PARAM=%s\n' "$FACECAST_PASSWORD_QUERY_PARAM"
-                printf 'FACECAST_DIRECT_LINK_FALLBACK=%s\n' "$FACECAST_DIRECT_LINK_FALLBACK"
-                printf 'FACECAST_DEMO_MODE=%s\n' "$FACECAST_DEMO_MODE"
-                printf 'WORKER_INTERVAL_MS=%s\n' "$WORKER_INTERVAL_MS"
-                printf 'TELEGRAM_CHANNEL_URL=%s\n' "$TELEGRAM_CHANNEL_URL"
-                printf 'COMPANY_SITE_URL=%s\n' "$COMPANY_SITE_URL"
-                printf 'PRIVACY_URL=%s\n' "$PRIVACY_URL"
-              } > .env
-              chmod 600 .env
-            elif [ -s .env ]; then
-              echo "GitHub production secrets are not complete; keeping existing VDS .env. Missing:$missing_env"
-              env_get() {
-                key="$1"
-                awk -v key="$key" 'index($0, key "=") == 1 { sub("^[^=]*=", ""); print; exit }' .env
-              }
-              ensure_env_alias() {
-                target="$1"
-                source="$2"
-                target_value="$(env_get "$target")"
-                source_value="$(env_get "$source")"
-                if [ -z "$target_value" ] && [ -n "$source_value" ]; then
-                  printf '%s=%s\n' "$target" "$source_value" >> .env
-                fi
-              }
-              ensure_env_alias MYSQL_DATABASE DB_DATABASE
-              ensure_env_alias MYSQL_USER DB_USERNAME
-              ensure_env_alias MYSQL_PASSWORD DB_PASSWORD
-              ensure_env_alias MYSQL_ROOT_PASSWORD DB_PASSWORD
-            else
-              echo "Missing required GitHub secrets/env:$missing_env"
-              echo "No existing .env found on VDS. Add GitHub Environment secrets or upload /opt/megapolis-tg-bot/.env."
+            # Секреты НЕ хранятся в GitHub. Файл .env ведётся ВРУЧНУЮ на сервере
+            # (он в .gitignore, деплой его не трогает). Если его нет — падаем явно.
+            if [ ! -f .env ]; then
+              echo "FATAL: /opt/megapolis-tg-bot/.env отсутствует."
+              echo "Создай .env на сервере вручную (секреты живут в нём, не в git)."
               exit 1
             fi
+
+            git fetch origin
+            git reset --hard origin/master
+
             docker compose -f compose.prod.yml pull
             docker compose -f compose.prod.yml up -d --remove-orphans
             docker compose -f compose.prod.yml ps
-            sleep 5
+
+            sleep 6
             if ! curl -fsS http://127.0.0.1:3000/health; then
-              docker compose -f compose.prod.yml ps
+              echo "Health check FAILED — логи app/worker:"
               docker compose -f compose.prod.yml logs --tail=120 app worker
               exit 1
             fi
+            echo "Deploy OK"

@@ -66,29 +66,15 @@ curl -s 'https://bot.knzteam.ru/health?facecast=1'  # ждём "facecast": { "re
 ```
 Если `ok:false` или бот не отвечает — смотри логи деплоя в GitHub → Actions, и откатывай (см. ниже).
 
-## GitHub Secrets для прода
+## Секреты (ручной `.env` на сервере)
 
-Продовый workflow сам собирает `.env` на VDS из GitHub Environment `production`. Секреты не коммитим в репозиторий.
+Секреты **НЕ хранятся в GitHub**. На сервере лежит файл `/opt/megapolis-tg-bot/.env` (он в `.gitignore`, ведётся **вручную**). Деплой его **не трогает** — `cd.yml` только тянет образ и перезапускает контейнеры. Для проекта такого размера это проще и надёжнее, чем генерация `.env` из GitHub Secrets (см. `docs/POSTMORTEM-2026-06-19-prod-outage.md` — почему от неё отказались).
 
-Обязательные secrets:
-
+В GitHub Secrets живут **только** инфраструктурные ключи для SSH-деплоя:
 - `VDS_HOST`
 - `VDS_SSH_KEY`
-- `MYSQL_DATABASE`
-- `MYSQL_USER`
-- `MYSQL_PASSWORD`
-- `MYSQL_ROOT_PASSWORD`
-- `ADMIN_PASSWORD_HASH`
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_WEBHOOK_SECRET`
-- `FACECAST_UID`
-- `FACECAST_API_KEY`
 
-Опциональные secrets:
-
-- `ADMIN_LOGIN`
-- `ADMIN_TELEGRAM_IDS`
-- `FACECAST_API_TOKEN`
+Прикладные секреты (`MYSQL_*`, `ADMIN_PASSWORD_HASH`, `TELEGRAM_*`, `FACECAST_*`) — **только в `.env` на сервере**. Шаблон — `.env.docker.example`. Меняешь секрет → правишь `.env` на VDS и перезапускаешь: `docker compose -f compose.prod.yml up -d`.
 
 ## Локальный запуск (для отладки до деплоя)
 
