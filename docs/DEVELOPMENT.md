@@ -62,8 +62,33 @@ gh pr create --base master --head dev --title "deploy: что катим"
 
 ```bash
 curl -s https://bot.knzteam.ru/health      # ждём "ok": true, "db": { "ok": true }
+curl -s 'https://bot.knzteam.ru/health?facecast=1'  # ждём "facecast": { "ready": true }
 ```
 Если `ok:false` или бот не отвечает — смотри логи деплоя в GitHub → Actions, и откатывай (см. ниже).
+
+## GitHub Secrets для прода
+
+Продовый workflow сам собирает `.env` на VDS из GitHub Environment `production`. Секреты не коммитим в репозиторий.
+
+Обязательные secrets:
+
+- `VDS_HOST`
+- `VDS_SSH_KEY`
+- `MYSQL_DATABASE`
+- `MYSQL_USER`
+- `MYSQL_PASSWORD`
+- `MYSQL_ROOT_PASSWORD`
+- `ADMIN_PASSWORD_HASH`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_WEBHOOK_SECRET`
+- `FACECAST_UID`
+- `FACECAST_API_KEY`
+
+Опциональные secrets:
+
+- `ADMIN_LOGIN`
+- `ADMIN_TELEGRAM_IDS`
+- `FACECAST_API_TOKEN`
 
 ## Локальный запуск (для отладки до деплоя)
 

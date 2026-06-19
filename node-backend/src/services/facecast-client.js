@@ -13,7 +13,7 @@ class FacecastApiError extends Error {
 
 export class FacecastClient {
   async registerViewer(event, person) {
-    if (config.facecast.demoMode || !config.facecast.uid || !config.facecast.apiKey) {
+    if (this.shouldUseDemoCredentials()) {
       return this.demoCredentials(event, person);
     }
 
@@ -58,18 +58,19 @@ export class FacecastClient {
       referer: streamUrl,
     });
 
-    if (!response?.ok || !response?.key) {
+    const key = this.extractViewerKey(response);
+    if (!this.isSuccessResponse(response) || !key) {
       throw new FacecastApiError('Facecast did not return a personal viewer key', {
         payload: response,
       });
     }
 
-    const key = String(response.key);
     return {
       login: email,
       password: key,
-      ticketId: String(response.ticket_id || ''),
-      url: this.viewerUrl(streamUrl, key, config.facecast.accessQueryParam || 'key'),
+      ticketId: this.extractTicketId(response),
+      url: this.viewerUrl(this.extractViewerUrl(response) || streamUrl, key, config.facecast.accessQueryParam || 'key'),
+      source: 'facecast',
     };
   }
 
@@ -83,6 +84,12 @@ export class FacecastClient {
       await this.insertKey(event, person, password);
     } catch (error) {
       if (error.status === 406 && config.facecast.directLinkFallback && streamUrl) {
+        if (this.isProduction()) {
+          throw new FacecastApiError('Facecast direct link fallback is forbidden in production', {
+            status: error.status,
+            payload: error.payload,
+          });
+        }
         logger.warn('facecast event does not support API passwords, using direct link fallback', {
           eventId: event.facecast_event_id || event.id,
           viewModeError: error.message,
@@ -91,6 +98,7 @@ export class FacecastClient {
           login: String(person.email || ''),
           password: '',
           url: streamUrl,
+          source: 'direct_link_fallback',
         };
       }
       throw error;
@@ -101,6 +109,7 @@ export class FacecastClient {
       password,
       ticketId: '',
       url: this.viewerUrl(streamUrl, password, config.facecast.passwordQueryParam || 'password'),
+      source: 'facecast',
     };
   }
 
@@ -189,7 +198,152 @@ export class FacecastClient {
       url: this.viewerUrl(streamUrl, password, this.registrationMode() === 'userreg'
         ? config.facecast.accessQueryParam || 'key'
         : config.facecast.passwordQueryParam || 'password'),
+      source: 'demo',
     };
+  }
+
+  shouldUseDemoCredentials() {
+    if (config.facecast.demoMode) {
+      if (this.isProduction()) {
+        throw new FacecastApiError('FACECAST_DEMO_MODE must be false in production');
+      }
+      return true;
+    }
+
+    if (!config.facecast.uid || !config.facecast.apiKey) {
+      if (this.isProduction()) {
+        throw new FacecastApiError('FACECAST_UID and FACECAST_API_KEY are required in production');
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  isExistingPersonalAccess(registration, event, person) {
+    const url = String(registration?.facecast_url || '').trim();
+    const password = String(registration?.facecast_password || '').trim();
+    if (!url || !password) {
+      return false;
+    }
+    const eventUrl = String(event?.facecast_url || config.facecast.defaultStreamUrl || '').trim();
+    if (url === eventUrl) {
+      return false;
+    }
+
+    if (this.isDemoUserregAccess(password, event, person)) {
+      return false;
+    }
+
+    return this.urlHasAccessValue(url, password);
+  }
+
+  isPersonalCredentials(credentials, event, person) {
+    const url = String(credentials?.url || '').trim();
+    const password = String(credentials?.password || '').trim();
+    if (!url || !password) {
+      return false;
+    }
+    if (this.isDemoUserregAccess(password, event, person)) {
+      return false;
+    }
+    return this.urlHasAccessValue(url, password);
+  }
+
+  isDemoUserregAccess(password, event, person) {
+    return this.registrationMode() === 'userreg'
+      && !this.allowDemoAccess()
+      && password === this.viewerPassword(event, person);
+  }
+
+  urlHasAccessValue(url, value) {
+    if (!url || !value) {
+      return false;
+    }
+
+    try {
+      const parsed = new URL(url);
+      const params = [
+        config.facecast.accessQueryParam || 'key',
+        config.facecast.passwordQueryParam || 'password',
+        'key',
+        'password',
+      ];
+      return params.some((param) => parsed.searchParams.get(param) === value);
+    } catch {
+      return url.includes(encodeURIComponent(value)) || url.includes(value);
+    }
+  }
+
+  extractViewerKey(response) {
+    const candidates = [
+      response?.key,
+      response?.viewer_key,
+      response?.access_key,
+      response?.password,
+      response?.ticket?.key,
+      response?.ticket?.password,
+      response?.data?.key,
+      response?.data?.viewer_key,
+      response?.data?.access_key,
+      response?.data?.password,
+      response?.result?.key,
+      response?.result?.viewer_key,
+      response?.result?.access_key,
+      response?.result?.password,
+    ];
+    return this.firstString(candidates);
+  }
+
+  extractTicketId(response) {
+    return this.firstString([
+      response?.ticket_id,
+      response?.ticketId,
+      response?.ticket?.id,
+      response?.data?.ticket_id,
+      response?.data?.ticketId,
+      response?.data?.ticket?.id,
+      response?.result?.ticket_id,
+      response?.result?.ticketId,
+      response?.result?.ticket?.id,
+    ]);
+  }
+
+  extractViewerUrl(response) {
+    return this.firstString([
+      response?.url,
+      response?.link,
+      response?.viewer_url,
+      response?.personal_url,
+      response?.data?.url,
+      response?.data?.link,
+      response?.data?.viewer_url,
+      response?.data?.personal_url,
+      response?.result?.url,
+      response?.result?.link,
+      response?.result?.viewer_url,
+      response?.result?.personal_url,
+    ]);
+  }
+
+  firstString(values) {
+    for (const value of values) {
+      const text = String(value || '').trim();
+      if (text) {
+        return text;
+      }
+    }
+    return '';
+  }
+
+  isSuccessResponse(response) {
+    if (!response) {
+      return false;
+    }
+    if (response.ok === false || response.success === false || response.error) {
+      return false;
+    }
+    return true;
   }
 
   viewerPassword(event, person) {
@@ -228,6 +382,14 @@ export class FacecastClient {
   registrationMode() {
     const mode = String(config.facecast.registrationMode || 'userreg').toLowerCase();
     return mode === 'insert_key' || mode === 'key' || mode === 'password' ? 'insert_key' : 'userreg';
+  }
+
+  isProduction() {
+    return String(config.nodeEnv || '').toLowerCase() === 'production';
+  }
+
+  allowDemoAccess() {
+    return config.facecast.demoMode && !this.isProduction();
   }
 
   email(value) {
