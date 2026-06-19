@@ -88,56 +88,60 @@ jobs:
             cd /opt/megapolis-tg-bot
             git fetch origin
             git reset --hard origin/master
-            require_env() {
-              name="$1"
+            missing_env=""
+            for name in MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD ADMIN_PASSWORD_HASH TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET FACECAST_UID FACECAST_API_KEY; do
               eval "value=\${$name:-}"
               if [ -z "$value" ]; then
-                echo "Missing required GitHub secret/env: $name"
-                exit 1
+                missing_env="$missing_env $name"
               fi
-            }
-            for name in MYSQL_DATABASE MYSQL_USER MYSQL_PASSWORD MYSQL_ROOT_PASSWORD ADMIN_PASSWORD_HASH TELEGRAM_BOT_TOKEN TELEGRAM_WEBHOOK_SECRET FACECAST_UID FACECAST_API_KEY; do
-              require_env "$name"
             done
 
-            ADMIN_PASSWORD_HASH_COMPOSE="$(printf '%s' "$ADMIN_PASSWORD_HASH" | sed 's/\$/$$/g')"
-            {
-              printf '%s\n' 'COMPOSE_PROJECT_NAME=megapolis_tg_bot'
-              printf '%s\n' 'IMAGE_TAG=latest'
-              printf 'APP_URL=%s\n' "$APP_URL"
-              printf 'APP_BIND=%s\n' "$APP_BIND"
-              printf 'APP_PORT=%s\n' "$APP_PORT"
-              printf 'APP_TIMEZONE=%s\n' "$APP_TIMEZONE"
-              printf 'MYSQL_DATABASE=%s\n' "$MYSQL_DATABASE"
-              printf 'MYSQL_USER=%s\n' "$MYSQL_USER"
-              printf 'MYSQL_PASSWORD=%s\n' "$MYSQL_PASSWORD"
-              printf 'MYSQL_ROOT_PASSWORD=%s\n' "$MYSQL_ROOT_PASSWORD"
-              printf 'ADMIN_LOGIN=%s\n' "${ADMIN_LOGIN:-admin}"
-              printf 'ADMIN_PASSWORD_HASH=%s\n' "$ADMIN_PASSWORD_HASH_COMPOSE"
-              printf 'TELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN"
-              printf 'TELEGRAM_WEBHOOK_SECRET=%s\n' "$TELEGRAM_WEBHOOK_SECRET"
-              printf 'TELEGRAM_REPLY_MODE=%s\n' "$TELEGRAM_REPLY_MODE"
-              printf 'TELEGRAM_DRY_RUN=%s\n' "$TELEGRAM_DRY_RUN"
-              printf 'ADMIN_TELEGRAM_IDS=%s\n' "$ADMIN_TELEGRAM_IDS"
-              printf 'FACECAST_API_BASE=%s\n' "$FACECAST_API_BASE"
-              printf 'FACECAST_UID=%s\n' "$FACECAST_UID"
-              printf 'FACECAST_API_KEY=%s\n' "$FACECAST_API_KEY"
-              printf 'FACECAST_API_TOKEN=%s\n' "$FACECAST_API_TOKEN"
-              printf 'FACECAST_REGISTRATION_MODE=%s\n' "$FACECAST_REGISTRATION_MODE"
-              printf 'FACECAST_REGISTRATION_ENDPOINT=%s\n' "$FACECAST_REGISTRATION_ENDPOINT"
-              printf 'FACECAST_USERREG_ENDPOINT=%s\n' "$FACECAST_USERREG_ENDPOINT"
-              printf 'FACECAST_CHANNEL_ID=%s\n' "$FACECAST_CHANNEL_ID"
-              printf 'FACECAST_DEFAULT_STREAM_URL=%s\n' "$FACECAST_DEFAULT_STREAM_URL"
-              printf 'FACECAST_ACCESS_QUERY_PARAM=%s\n' "$FACECAST_ACCESS_QUERY_PARAM"
-              printf 'FACECAST_PASSWORD_QUERY_PARAM=%s\n' "$FACECAST_PASSWORD_QUERY_PARAM"
-              printf 'FACECAST_DIRECT_LINK_FALLBACK=%s\n' "$FACECAST_DIRECT_LINK_FALLBACK"
-              printf 'FACECAST_DEMO_MODE=%s\n' "$FACECAST_DEMO_MODE"
-              printf 'WORKER_INTERVAL_MS=%s\n' "$WORKER_INTERVAL_MS"
-              printf 'TELEGRAM_CHANNEL_URL=%s\n' "$TELEGRAM_CHANNEL_URL"
-              printf 'COMPANY_SITE_URL=%s\n' "$COMPANY_SITE_URL"
-              printf 'PRIVACY_URL=%s\n' "$PRIVACY_URL"
-            } > .env
-            chmod 600 .env
+            if [ -z "$missing_env" ]; then
+              ADMIN_PASSWORD_HASH_COMPOSE="$(printf '%s' "$ADMIN_PASSWORD_HASH" | sed 's/\$/$$/g')"
+              {
+                printf '%s\n' 'COMPOSE_PROJECT_NAME=megapolis_tg_bot'
+                printf '%s\n' 'IMAGE_TAG=latest'
+                printf 'APP_URL=%s\n' "$APP_URL"
+                printf 'APP_BIND=%s\n' "$APP_BIND"
+                printf 'APP_PORT=%s\n' "$APP_PORT"
+                printf 'APP_TIMEZONE=%s\n' "$APP_TIMEZONE"
+                printf 'MYSQL_DATABASE=%s\n' "$MYSQL_DATABASE"
+                printf 'MYSQL_USER=%s\n' "$MYSQL_USER"
+                printf 'MYSQL_PASSWORD=%s\n' "$MYSQL_PASSWORD"
+                printf 'MYSQL_ROOT_PASSWORD=%s\n' "$MYSQL_ROOT_PASSWORD"
+                printf 'ADMIN_LOGIN=%s\n' "${ADMIN_LOGIN:-admin}"
+                printf 'ADMIN_PASSWORD_HASH=%s\n' "$ADMIN_PASSWORD_HASH_COMPOSE"
+                printf 'TELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN"
+                printf 'TELEGRAM_WEBHOOK_SECRET=%s\n' "$TELEGRAM_WEBHOOK_SECRET"
+                printf 'TELEGRAM_REPLY_MODE=%s\n' "$TELEGRAM_REPLY_MODE"
+                printf 'TELEGRAM_DRY_RUN=%s\n' "$TELEGRAM_DRY_RUN"
+                printf 'ADMIN_TELEGRAM_IDS=%s\n' "$ADMIN_TELEGRAM_IDS"
+                printf 'FACECAST_API_BASE=%s\n' "$FACECAST_API_BASE"
+                printf 'FACECAST_UID=%s\n' "$FACECAST_UID"
+                printf 'FACECAST_API_KEY=%s\n' "$FACECAST_API_KEY"
+                printf 'FACECAST_API_TOKEN=%s\n' "$FACECAST_API_TOKEN"
+                printf 'FACECAST_REGISTRATION_MODE=%s\n' "$FACECAST_REGISTRATION_MODE"
+                printf 'FACECAST_REGISTRATION_ENDPOINT=%s\n' "$FACECAST_REGISTRATION_ENDPOINT"
+                printf 'FACECAST_USERREG_ENDPOINT=%s\n' "$FACECAST_USERREG_ENDPOINT"
+                printf 'FACECAST_CHANNEL_ID=%s\n' "$FACECAST_CHANNEL_ID"
+                printf 'FACECAST_DEFAULT_STREAM_URL=%s\n' "$FACECAST_DEFAULT_STREAM_URL"
+                printf 'FACECAST_ACCESS_QUERY_PARAM=%s\n' "$FACECAST_ACCESS_QUERY_PARAM"
+                printf 'FACECAST_PASSWORD_QUERY_PARAM=%s\n' "$FACECAST_PASSWORD_QUERY_PARAM"
+                printf 'FACECAST_DIRECT_LINK_FALLBACK=%s\n' "$FACECAST_DIRECT_LINK_FALLBACK"
+                printf 'FACECAST_DEMO_MODE=%s\n' "$FACECAST_DEMO_MODE"
+                printf 'WORKER_INTERVAL_MS=%s\n' "$WORKER_INTERVAL_MS"
+                printf 'TELEGRAM_CHANNEL_URL=%s\n' "$TELEGRAM_CHANNEL_URL"
+                printf 'COMPANY_SITE_URL=%s\n' "$COMPANY_SITE_URL"
+                printf 'PRIVACY_URL=%s\n' "$PRIVACY_URL"
+              } > .env
+              chmod 600 .env
+            elif [ -s .env ]; then
+              echo "GitHub production secrets are not complete; keeping existing VDS .env. Missing:$missing_env"
+            else
+              echo "Missing required GitHub secrets/env:$missing_env"
+              echo "No existing .env found on VDS. Add GitHub Environment secrets or upload /opt/megapolis-tg-bot/.env."
+              exit 1
+            fi
             docker compose -f compose.prod.yml pull
             docker compose -f compose.prod.yml up -d --remove-orphans
             docker compose -f compose.prod.yml ps
