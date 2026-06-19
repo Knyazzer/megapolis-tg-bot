@@ -13,7 +13,15 @@ import { TelegramClient } from '../services/telegram-client.js';
 import { dateShort, nowSql, timeOnly, timeRange } from '../utils/dates.js';
 import { h } from '../utils/html.js';
 import { logger } from '../utils/logger.js';
-import { eventsMenuKeyboard, inlineKeyboard, mainMenuKeyboard, phoneKeyboard, removeKeyboard } from './keyboards.js';
+import {
+  consentKeyboard,
+  eventsMenuKeyboard,
+  inlineKeyboard,
+  mainMenuKeyboard,
+  phoneKeyboard,
+  removeKeyboard,
+  startRegistrationKeyboard,
+} from './keyboards.js';
 
 export class BotController {
   constructor({ telegram }) {
@@ -50,6 +58,7 @@ export class BotController {
 
     const person = await this.people.upsertFromTelegram(from);
     const text = String(message.text || '').trim();
+    const state = String(person.state || 'new');
 
     if (message.video_note && this.isAdminTelegramId(from.id)) {
       const fileId = String(message.video_note.file_id || '');
@@ -57,7 +66,7 @@ export class BotController {
       return;
     }
 
-    if (text === '/start' || text === 'Главное меню') {
+    if (this.isMainMenuText(text)) {
       await this.sendWelcomeOrMenu(chatId, person);
       return;
     }
@@ -67,8 +76,49 @@ export class BotController {
       return;
     }
 
-    if (text === '/events' || text === 'Ближайшие мероприятия') {
+    if (this.isStartRegistrationText(text)) {
+      if (profileComplete(person)) {
+        await this.sendMainMenu(chatId);
+        return;
+      }
+
+      if (person.consent_accepted_at) {
+        await this.sendCurrentProfilePrompt(chatId, person);
+        return;
+      }
+
+      await this.people.setState(person.id, 'awaiting_consent');
+      await this.sendConsent(chatId);
+      return;
+    }
+
+    if (this.isConsentText(text) && !profileComplete(person)) {
+      if (!person.consent_accepted_at || ['new', 'awaiting_consent'].includes(state)) {
+        await this.acceptConsentAndAskName(chatId, person);
+      } else {
+        await this.sendCurrentProfilePrompt(chatId, person);
+      }
+      return;
+    }
+
+    if (this.isEventsText(text)) {
+      if (!(await this.ensureProfileReady(chatId, person))) {
+        return;
+      }
       await this.sendEvents(chatId);
+      return;
+    }
+
+    if (this.isSocialsText(text)) {
+      await this.sendSocialLinks(chatId);
+      return;
+    }
+
+    if (this.isMyRegistrationsText(text)) {
+      if (!(await this.ensureProfileReady(chatId, person))) {
+        return;
+      }
+      await this.sendMyRegistrations(chatId, person);
       return;
     }
 
@@ -103,9 +153,7 @@ export class BotController {
     }
 
     if (data === 'consent_accept') {
-      await this.people.acceptConsent(person.id);
-      await this.people.setState(person.id, 'ask_name');
-      await this.telegram.sendMessage(chatId, 'Спасибо! Давайте познакомимся 🙂 Напишите, пожалуйста, имя и фамилию.');
+      await this.acceptConsentAndAskName(chatId, person);
       return;
     }
 
@@ -190,25 +238,30 @@ export class BotController {
     }
 
     if (state === 'awaiting_consent') {
+      if (this.isConsentText(text)) {
+        await this.acceptConsentAndAskName(chatId, person);
+        return;
+      }
+
       await this.sendConsent(chatId);
       return;
     }
 
     if (state === 'ask_name') {
       if (text.length < 2) {
-        await this.telegram.sendMessage(chatId, 'Напишите, пожалуйста, имя и фамилию текстом, чтобы мы корректно оформили регистрацию.');
+        await this.telegram.sendMessage(chatId, 'Напишите, пожалуйста, имя и фамилию текстом, чтобы мы корректно оформили регистрацию.', removeKeyboard());
         return;
       }
       await this.people.updateFields(person.id, { full_name: text });
       await this.people.setState(person.id, 'ask_company');
-      await this.telegram.sendMessage(chatId, 'Из какой вы компании?');
+      await this.telegram.sendMessage(chatId, 'Из какой вы компании?', removeKeyboard());
       return;
     }
 
     if (state === 'ask_company') {
       await this.people.updateFields(person.id, { company: text });
       await this.people.setState(person.id, 'ask_position');
-      await this.telegram.sendMessage(chatId, 'А какая у вас должность?');
+      await this.telegram.sendMessage(chatId, 'А какая у вас должность?', removeKeyboard());
       return;
     }
 
@@ -221,8 +274,13 @@ export class BotController {
 
     if (state === 'ask_phone') {
       const phone = String(message.contact?.phone_number || text);
+      if (!message.contact && this.isPhoneButtonText(text)) {
+        await this.telegram.sendMessage(chatId, 'Нажмите кнопку ниже, чтобы Telegram передал номер, или напишите телефон текстом.', phoneKeyboard());
+        return;
+      }
+
       if (phone.length < 6) {
-        await this.telegram.sendMessage(chatId, 'Кажется, это не номер телефона. Пришлите номер текстом или кнопкой, пожалуйста.');
+        await this.telegram.sendMessage(chatId, 'Кажется, это не номер телефона. Пришлите номер текстом или кнопкой, пожалуйста.', phoneKeyboard());
         return;
       }
       await this.people.updateFields(person.id, { phone });
@@ -233,7 +291,7 @@ export class BotController {
 
     if (state === 'ask_email') {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) {
-        await this.telegram.sendMessage(chatId, 'Почта выглядит непривычно. Напишите email в формате name@example.com.');
+        await this.telegram.sendMessage(chatId, 'Почта выглядит непривычно. Напишите email в формате name@example.com.', removeKeyboard());
         return;
       }
       await this.people.updateFields(person.id, { email: text.toLowerCase() });
@@ -245,9 +303,45 @@ export class BotController {
     await this.sendMainMenu(chatId);
   }
 
+  async sendCurrentProfilePrompt(chatId, person) {
+    const state = String(person.state || 'new');
+
+    if (state === 'ask_name') {
+      await this.telegram.sendMessage(chatId, 'Согласие принято. Напишите, пожалуйста, имя и фамилию.', removeKeyboard());
+      return;
+    }
+
+    if (state === 'ask_company') {
+      await this.telegram.sendMessage(chatId, 'Согласие принято. Из какой вы компании?', removeKeyboard());
+      return;
+    }
+
+    if (state === 'ask_position') {
+      await this.telegram.sendMessage(chatId, 'Согласие принято. А какая у вас должность?', removeKeyboard());
+      return;
+    }
+
+    if (state === 'ask_phone') {
+      await this.telegram.sendMessage(chatId, 'Согласие принято. Поделитесь, пожалуйста, номером телефона.', phoneKeyboard());
+      return;
+    }
+
+    if (state === 'ask_email') {
+      await this.telegram.sendMessage(chatId, 'Согласие принято. Напишите вашу почту.', removeKeyboard());
+      return;
+    }
+
+    await this.sendWelcome(chatId);
+  }
+
   async sendWelcomeOrMenu(chatId, person) {
     if (profileComplete(person)) {
       await this.sendMainMenu(chatId);
+      return;
+    }
+
+    if (person.consent_accepted_at) {
+      await this.sendCurrentProfilePrompt(chatId, person);
       return;
     }
 
@@ -259,25 +353,58 @@ export class BotController {
       + 'Здесь можно зарегистрироваться на наши митапы, эфиры и деловые встречи.\n\n'
       + 'Давайте познакомимся, чтобы мы могли корректно оформить вашу регистрацию.';
 
-    await this.telegram.sendMessage(chatId, text, inlineKeyboard([
-      [{ text: 'Зарегистрироваться', callback_data: 'start_registration' }],
-      [{ text: 'Главное меню', callback_data: 'main_menu' }],
-    ]));
+    await this.telegram.sendMessage(chatId, text, startRegistrationKeyboard());
   }
 
   async sendConsent(chatId) {
-    await this.telegram.sendMessage(chatId, this.consentText(), inlineKeyboard([
-      [{ text: 'Даю согласие', callback_data: 'consent_accept' }],
-      [{ text: 'Главное меню', callback_data: 'main_menu' }],
-    ]));
+    await this.telegram.sendMessage(chatId, this.consentText(), consentKeyboard());
+  }
+
+  async acceptConsentAndAskName(chatId, person) {
+    await this.people.acceptConsent(person.id);
+    await this.people.setState(person.id, 'ask_name');
+    await this.telegram.sendMessage(chatId, 'Спасибо! Давайте познакомимся 🙂 Напишите, пожалуйста, имя и фамилию.', removeKeyboard());
   }
 
   async sendMainMenu(chatId) {
-    await this.telegram.sendMessage(chatId, 'Что посмотрим дальше? Мы рядом в соцсетях и на сайте 🙂', inlineKeyboard([
+    await this.telegram.sendMessage(chatId, 'Главное меню рядом — выберите действие на клавиатуре ниже 🙂', mainMenuKeyboard());
+  }
+
+  async sendSocialLinks(chatId) {
+    await this.telegram.sendMessage(chatId, 'Мы рядом в соцсетях и на сайте:', inlineKeyboard([
       [{ text: 'Телеграм канал', url: config.links.telegramChannel }],
       [{ text: 'Сайт', url: config.links.companySite }],
-      [{ text: 'Ближайшие мероприятия', callback_data: 'events' }],
     ]));
+  }
+
+  async sendMyRegistrations(chatId, person) {
+    const rows = await this.registrations.listByPerson(person.id);
+    if (rows.length === 0) {
+      await this.telegram.sendMessage(
+        chatId,
+        'Пока у вас нет активных регистраций. Откройте ближайшие мероприятия и выберите удобный формат участия 🙂',
+        mainMenuKeyboard(),
+      );
+      return;
+    }
+
+    const lines = rows.map((row) => {
+      const format = row.attendance === 'online' ? 'онлайн' : 'офлайн';
+      const time = row.attendance === 'online'
+        ? timeOnly(row.online_start || row.date_start)
+        : timeRange(row.date_start, row.date_end);
+
+      return `- <b>${h(row.title)}</b>\n`
+        + `  ${h(dateShort(row.date_start))}, ${h(time)}\n`
+        + `  Формат: ${h(format)}\n`
+        + `  Статус: ${h(this.registrationStatusText(row))}`;
+    });
+
+    await this.telegram.sendMessage(
+      chatId,
+      `Ваши регистрации:\n\n${lines.join('\n\n')}`,
+      mainMenuKeyboard(),
+    );
   }
 
   async sendEvents(chatId) {
@@ -478,9 +605,11 @@ export class BotController {
       return true;
     }
 
-    await this.telegram.sendMessage(chatId, 'Сначала давайте познакомимся, чтобы корректно оформить регистрацию.', inlineKeyboard([
-      [{ text: 'Зарегистрироваться', callback_data: 'start_registration' }],
-    ]));
+    await this.telegram.sendMessage(
+      chatId,
+      'Сначала давайте познакомимся, чтобы корректно оформить регистрацию.',
+      startRegistrationKeyboard(),
+    );
 
     return false;
   }
@@ -495,6 +624,44 @@ export class BotController {
     }
     buttons.push([{ text: 'Главное меню', callback_data: 'main_menu' }]);
     return inlineKeyboard(buttons);
+  }
+
+  registrationStatusText(row) {
+    if (row.status === 'pending') return 'на проверке';
+    if (row.status === 'approved') return 'зарегистрированы';
+    if (row.status === 'visited') return row.attendance === 'online' ? 'смотрели эфир' : 'пришли';
+    if (row.status === 'no_show') return row.attendance === 'online' ? 'не смотрели эфир' : 'не пришли';
+    if (row.status === 'rejected') return 'отказ';
+    if (row.status === 'cancelled') return 'отменено';
+    return row.status || 'без статуса';
+  }
+
+  isMainMenuText(text) {
+    return ['/start', 'Главное меню', '🏠 Главное меню'].includes(text);
+  }
+
+  isStartRegistrationText(text) {
+    return ['Зарегистрироваться', '🚀 Зарегистрироваться'].includes(text);
+  }
+
+  isConsentText(text) {
+    return ['Даю согласие', '✅ Даю согласие'].includes(text);
+  }
+
+  isEventsText(text) {
+    return ['/events', 'Ближайшие мероприятия', '🗓 Мероприятия'].includes(text);
+  }
+
+  isSocialsText(text) {
+    return ['Соцсети', '🌐 Соцсети'].includes(text);
+  }
+
+  isMyRegistrationsText(text) {
+    return ['Мои регистрации', '👤 Мои регистрации'].includes(text);
+  }
+
+  isPhoneButtonText(text) {
+    return ['Отправить телефон', '📱 Отправить телефон'].includes(text);
   }
 
   isAdminTelegramId(telegramId) {
