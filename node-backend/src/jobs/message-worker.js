@@ -1,8 +1,11 @@
 import { query } from '../db/mysql.js';
+import { FacecastClient } from '../services/facecast-client.js';
 import { TelegramClient } from '../services/telegram-client.js';
 import { dateShort, nowSql, timeOnly, timeRange } from '../utils/dates.js';
 import { h } from '../utils/html.js';
 import { logger } from '../utils/logger.js';
+
+const facecast = new FacecastClient();
 
 export async function processDueMessages({ limit = 50 } = {}) {
   const telegram = new TelegramClient();
@@ -15,7 +18,9 @@ async function processScheduledMessages(telegram, limit) {
   const rows = await query(
     `SELECT
        sm.*,
+       p.id AS person_id,
        p.telegram_id,
+       p.email,
        r.attendance,
        r.status,
        r.archived_at,
@@ -27,6 +32,7 @@ async function processScheduledMessages(telegram, limit) {
        e.date_end,
        e.online_start,
        e.address,
+       e.facecast_event_id,
        e.facecast_url AS event_facecast_url,
        e.recording_url,
        e.photo_album_url
@@ -143,7 +149,7 @@ function scheduledMessageIsStale(row) {
 }
 
 function scheduledMessagePayload(row) {
-  const url = String(row.facecast_url || '');
+  const url = validPersonalFacecastUrl(row);
   const eventTitle = String(row.title || 'мероприятие');
   const date = dateShort(row.date_start);
   const range = timeRange(row.date_start, row.date_end);
@@ -198,6 +204,27 @@ function scheduledMessagePayload(row) {
   }
 
   return [`Напоминание о мероприятии: ${h(eventTitle)} в ${h(timeOnly(row.date_start))}`, {}];
+}
+
+function validPersonalFacecastUrl(row) {
+  const registration = {
+    facecast_url: row.facecast_url,
+    facecast_password: row.facecast_password,
+  };
+  const event = {
+    id: row.event_id,
+    facecast_event_id: row.facecast_event_id,
+    facecast_url: row.event_facecast_url,
+  };
+  const person = {
+    id: row.person_id,
+    telegram_id: row.telegram_id,
+    email: row.email,
+  };
+
+  return facecast.isExistingPersonalAccess(registration, event, person)
+    ? String(row.facecast_url || '')
+    : '';
 }
 
 function confirmKeyboard(registrationId) {

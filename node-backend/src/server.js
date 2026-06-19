@@ -139,7 +139,10 @@ async function handleHealth(response, url) {
          ORDER BY date_start ASC
          LIMIT 1`,
       );
+      const facecastMissing = facecastMissingSettings(event);
       payload.facecast = {
+        ready: facecastMissing.length === 0,
+        missing_settings: facecastMissing,
         demo_mode: config.facecast.demoMode,
         uid_configured: Boolean(config.facecast.uid),
         api_key_configured: Boolean(config.facecast.apiKey),
@@ -172,6 +175,26 @@ async function handleHealth(response, url) {
   }
 
   json(response, payload.ok ? 200 : 500, payload);
+}
+
+function facecastMissingSettings(event) {
+  const missing = [];
+  if (config.facecast.demoMode) missing.push('FACECAST_DEMO_MODE=false');
+  if (!config.facecast.uid) missing.push('FACECAST_UID');
+  if (!config.facecast.apiKey) missing.push('FACECAST_API_KEY');
+  if (String(config.facecast.registrationMode || '').trim() !== 'userreg') {
+    missing.push('FACECAST_REGISTRATION_MODE=userreg');
+  }
+  if (!config.facecast.userregEndpoint) missing.push('FACECAST_USERREG_ENDPOINT');
+  if (!config.facecast.channelId) missing.push('FACECAST_CHANNEL_ID');
+  if (!config.facecast.defaultStreamUrl) missing.push('FACECAST_DEFAULT_STREAM_URL');
+  if (!event) {
+    missing.push('active_event');
+    return missing;
+  }
+  if (!String(event.facecast_event_id || '').trim()) missing.push('event.facecast_event_id');
+  if (!String(event.facecast_url || '').trim()) missing.push('event.facecast_url');
+  return missing;
 }
 
 async function handleTelegramWebhook(request, response) {

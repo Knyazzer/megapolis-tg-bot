@@ -218,7 +218,11 @@ export class BotController {
       if (registration && Number(registration.person_id) === Number(person.id)) {
         const event = await this.events.findById(Number(registration.event_id));
         if (event) {
-          if (registration.attendance === 'online' && registration.status === 'approved' && !registration.facecast_url) {
+          if (
+            registration.attendance === 'online' &&
+            registration.status === 'approved' &&
+            !this.facecast.isExistingPersonalAccess(registration, event, person)
+          ) {
             await this.registerOnline(chatId, person, event);
             return;
           }
@@ -482,7 +486,12 @@ export class BotController {
     }
 
     const existing = await this.registrations.findByPersonEvent(person.id, event.id);
-    if (existing && existing.attendance === 'online' && existing.status === 'approved' && existing.facecast_url) {
+    if (
+      existing &&
+      existing.attendance === 'online' &&
+      existing.status === 'approved' &&
+      this.facecast.isExistingPersonalAccess(existing, event, person)
+    ) {
       await this.sendOnlineAccess(chatId, event, existing);
       return;
     }
@@ -500,6 +509,21 @@ export class BotController {
       await this.telegram.sendMessage(
         chatId,
         'Сейчас не получилось создать доступ к онлайн-трансляции. Мы уже видим проблему и вернёмся с ссылкой чуть позже.',
+        mainMenuKeyboard(),
+      );
+      return;
+    }
+
+    if (!this.facecast.isPersonalCredentials(credentials, event, person)) {
+      logger.warn('facecast returned unusable personal access', {
+        eventId: event.id,
+        facecastEventId: event.facecast_event_id,
+        personId: person.id,
+        source: credentials.source || '',
+      });
+      await this.telegram.sendMessage(
+        chatId,
+        'Сейчас не получилось создать персональную ссылку на трансляцию. Мы уже видим проблему и вернёмся с ссылкой чуть позже.',
         mainMenuKeyboard(),
       );
       return;
