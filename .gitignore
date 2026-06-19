@@ -1,6 +1,9 @@
 .env
 .DS_Store
 *.zip
+cred.md
+*.cred
+secrets*.md
 hosting_upload_*/
 martis_pro_upload_contents*/
 storage/*.sqlite
