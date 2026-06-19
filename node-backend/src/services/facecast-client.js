@@ -30,6 +30,9 @@ export class FacecastClient {
     if (!eventId) {
       throw new FacecastApiError('Facecast event_id is empty');
     }
+    if (!streamUrl) {
+      throw new FacecastApiError('Facecast stream URL is empty');
+    }
 
     const email = this.email(person.email);
     const fullName = this.truncate(person.full_name, 64);
@@ -73,6 +76,9 @@ export class FacecastClient {
   async registerKeyViewer(event, person) {
     const password = this.viewerPassword(event, person);
     const streamUrl = String(event.facecast_url || config.facecast.defaultStreamUrl || '');
+    if (!streamUrl) {
+      throw new FacecastApiError('Facecast stream URL is empty');
+    }
     try {
       await this.insertKey(event, person, password);
     } catch (error) {

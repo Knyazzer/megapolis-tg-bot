@@ -131,6 +131,31 @@ async function handleHealth(response, url) {
       payload.schema = await mysqlSchemaDiagnostics();
       payload.ok = payload.ok && payload.schema.ok;
     }
+    if (url.searchParams.get('facecast') === '1') {
+      const event = await queryOne(
+        `SELECT id, title, facecast_event_id, facecast_url
+         FROM events
+         WHERE is_active = 1
+         ORDER BY date_start ASC
+         LIMIT 1`,
+      );
+      payload.facecast = {
+        demo_mode: config.facecast.demoMode,
+        uid_configured: Boolean(config.facecast.uid),
+        api_key_configured: Boolean(config.facecast.apiKey),
+        registration_mode: config.facecast.registrationMode,
+        channel_id_configured: Boolean(config.facecast.channelId),
+        default_stream_url_configured: Boolean(config.facecast.defaultStreamUrl),
+        active_event: event
+          ? {
+              id: Number(event.id),
+              title: event.title,
+              facecast_event_id_configured: Boolean(String(event.facecast_event_id || '').trim()),
+              facecast_url_configured: Boolean(String(event.facecast_url || '').trim()),
+            }
+          : null,
+      };
+    }
   } catch (error) {
     payload.ok = false;
     payload.db.error = error.message;

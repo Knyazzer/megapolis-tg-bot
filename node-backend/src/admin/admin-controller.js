@@ -1,6 +1,7 @@
 import { config } from '../config.js';
 import { BotController } from '../bot/bot-controller.js';
 import { execute, isSqlite, query, queryOne, withTransaction } from '../db/mysql.js';
+import { processDueMessages } from '../jobs/message-worker.js';
 import {
   eventFormatLabel,
   eventSupportsOffline,
@@ -52,6 +53,10 @@ export class AdminController {
       return this.handlePost(action, form);
     }
 
+    if (action === 'broadcast_recipients') {
+      return this.broadcastRecipientsJson(url);
+    }
+
     const page = String(url.searchParams.get('page') || 'registrations');
     const content = await this.page(page, url);
     return html(this.layout(this.pageTitle(page), content, page));
@@ -86,6 +91,8 @@ export class AdminController {
         await this.undoVisited(form);
       } else if (action === 'create_broadcast') {
         await this.createBroadcast(form);
+      } else if (action === 'process_queue') {
+        await this.processMessageQueue();
       } else if (action === 'seed_demo') {
         await this.seedDemo();
       } else if (action === 'simulator_reset') {
@@ -147,7 +154,7 @@ export class AdminController {
     if (page === 'event_edit') return this.eventEditPage(Number(url.searchParams.get('id') || 0));
     if (page === 'people') return this.peoplePage();
     if (page === 'reception') return this.receptionPage(url);
-    if (page === 'broadcasts') return this.broadcastsPage();
+    if (page === 'broadcasts') return this.broadcastsPage(url);
     if (page === 'flow') return this.flowPage();
     if (page === 'simulator') return this.simulatorPage();
     return this.registrationsPage(url);
@@ -305,7 +312,8 @@ export class AdminController {
     const eventId = Number(url.searchParams.get('event_id') || 0);
     const view = ['all', 'online', 'offline', 'archived'].includes(url.searchParams.get('view')) ? url.searchParams.get('view') : 'all';
     const layout = ['list', 'kanban'].includes(url.searchParams.get('layout')) ? url.searchParams.get('layout') : (view === 'all' ? 'kanban' : 'list');
-    const events = await query('SELECT id, title FROM events ORDER BY date_start DESC');
+    const events = await query('SELECT id, title, date_start FROM events ORDER BY date_start DESC');
+    const selectedEvent = events.find((event) => Number(event.id) === eventId) || null;
     const where = [];
     const params = {};
     if (eventId > 0) {
@@ -327,13 +335,8 @@ export class AdminController {
     const registrations = await query(sql, params);
     const counts = await this.registrationCounts(eventId);
 
-    let body = `<section class="panel registrations-workspace"><div class="panel-head"><h2>Регистрации</h2><span class="muted">${registrations.length} записей</span></div>`;
-    body += `<div class="registrations-toolbar">${this.registrationViewTabs(view, eventId, counts, layout)}${this.registrationLayoutToggle(view, eventId, layout)}</div>`;
-    body += `<form class="filters" method="get"><input type="hidden" name="page" value="registrations"><input type="hidden" name="view" value="${h(view)}"><input type="hidden" name="layout" value="${h(layout)}"><label>Мероприятие<select name="event_id"><option value="0">Все</option>`;
-    for (const event of events) {
-      body += `<option value="${Number(event.id)}" ${eventId === Number(event.id) ? 'selected' : ''}>${h(event.title)}</option>`;
-    }
-    body += '</select></label><button class="button" type="submit">Показать</button></form>';
+    let body = '<section class="panel registrations-workspace">';
+    body += this.registrationFilterPanel({ view, eventId, layout, counts, events, selectedEvent, total: registrations.length });
     body += layout === 'kanban' ? this.registrationsKanban(registrations, view) : this.registrationsTable(registrations, true);
     return `${body}</section>`;
   }
@@ -370,27 +373,49 @@ export class AdminController {
     return `${body}</section>`;
   }
 
-  async broadcastsPage() {
-    const events = await query('SELECT id, title FROM events ORDER BY date_start DESC');
-    const campaigns = await query('SELECT c.*, e.title AS event_title FROM broadcast_campaigns c LEFT JOIN events e ON e.id = c.event_id ORDER BY c.created_at DESC LIMIT 50');
-    let body = '<section class="panel narrow"><h2>Новая рассылка</h2><form method="post" class="form-grid">';
-    body += `${csrfField(this.session)}<input type="hidden" name="action" value="create_broadcast"><input type="hidden" name="_return" value="/?page=broadcasts">`;
+  async broadcastsPage(url) {
+    const tab = String(url.searchParams.get('tab') || 'new');
+    const events = await query('SELECT id, title, date_start FROM events ORDER BY date_start DESC');
+    const campaigns = await this.broadcastCampaigns();
+    let body = '<section class="panel broadcast-page">';
+    body += `<nav class="broadcast-tabs" aria-label="Раздел рассылок"><a class="${tab !== 'history' ? 'active' : ''}" href="/?page=broadcasts">Новая рассылка</a><a class="${tab === 'history' ? 'active' : ''}" href="/?page=broadcasts&tab=history">История</a></nav>`;
+
+    if (tab === 'history') {
+      body += '<div class="broadcast-history"><div class="panel-head"><h2>История рассылок</h2><form method="post" class="inline-form">';
+      body += `${csrfField(this.session)}<input type="hidden" name="action" value="process_queue"><input type="hidden" name="_return" value="/?page=broadcasts&tab=history"><button class="button muted-button" type="submit">Обработать очередь сейчас</button></form></div>`;
+      body += '<table><thead><tr><th>Рассылка</th><th>Аудитория</th><th>Доставка</th><th>Статус</th><th>Создана</th></tr></thead><tbody>';
+      const audiences = this.audiences();
+      for (const campaign of campaigns) {
+        body += '<tr>';
+        body += `<td><strong>${h(campaign.title)}</strong><div class="muted">${h(campaign.event_title || 'Без события')}</div>${campaign.last_error ? `<div class="broadcast-error">${h(campaign.last_error)}</div>` : ''}</td>`;
+        body += `<td>${h(audiences[campaign.audience] || campaign.audience)}</td>`;
+        body += `<td>${this.broadcastDeliveryStats(campaign)}</td>`;
+        body += `<td>${this.broadcastStatusLabel(campaign)}</td>`;
+        body += `<td>${h(this.dateTime(campaign.created_at))}</td>`;
+        body += '</tr>';
+      }
+      if (campaigns.length === 0) {
+        body += '<tr><td colspan="5"><p class="empty">Рассылок пока нет.</p></td></tr>';
+      }
+      return `${body}</tbody></table></div></section>`;
+    }
+
+    body += '<div class="broadcast-compose"><div class="panel-head"><h2>Новая рассылка</h2><span class="muted">Выберите аудиторию и проверьте получателей</span></div><form method="post" class="form-grid" data-broadcast-form>';
+    body += `${csrfField(this.session)}<input type="hidden" name="action" value="create_broadcast"><input type="hidden" name="_return" value="/?page=broadcasts&tab=history">`;
     body += this.input('Название рассылки', 'title', '', true);
     body += '<label>Аудитория<select name="audience" required>';
-    for (const [key, label] of Object.entries(this.audiences())) body += `<option value="${h(key)}">${h(label)}</option>`;
+    for (const [key, label] of Object.entries(this.audiences())) {
+      body += `<option value="${h(key)}" data-requires-event="${this.audienceRequiresEvent(key) ? '1' : '0'}">${h(label)}</option>`;
+    }
     body += '</select></label><label>Мероприятие<select name="event_id"><option value="0">Не привязывать</option>';
-    for (const event of events) body += `<option value="${Number(event.id)}">${h(event.title)}</option>`;
+    for (const event of events) body += `<option value="${Number(event.id)}">${h(`${event.title} - ${dateShort(event.date_start)}`)}</option>`;
     body += '</select></label><label>Тип<select name="content_type"><option value="text">Текст</option><option value="photo">Картинка + текст</option><option value="video_note">Кружок + текст</option></select></label>';
     body += this.textarea('Текст сообщения', 'body', '');
     body += this.input('Telegram file_id или URL медиа', 'media_file_id', '');
     body += '<p class="hint">Для картинки можно вставить HTTPS-ссылку или Telegram file_id. Для кружка нужен именно file_id: отправьте кружок боту от Telegram ID, указанного в ADMIN_TELEGRAM_IDS.</p>';
-    body += '<div class="actions"><button class="button button-primary" type="submit">Поставить в очередь</button></div></form></section>';
-    body += '<section class="panel"><h2>История рассылок</h2><table><thead><tr><th>Название</th><th>Аудитория</th><th>Статус</th><th>Создана</th></tr></thead><tbody>';
-    const audiences = this.audiences();
-    for (const campaign of campaigns) {
-      body += `<tr><td><strong>${h(campaign.title)}</strong><div class="muted">${h(campaign.event_title)}</div></td><td>${h(audiences[campaign.audience] || campaign.audience)}</td><td>${h(campaign.status)}</td><td>${h(this.dateTime(campaign.created_at))}</td></tr>`;
-    }
-    return `${body}</tbody></table></section>`;
+    body += '<div class="broadcast-preview" data-broadcast-preview><div class="broadcast-preview-head"><strong>Получатели</strong><span class="muted" data-broadcast-preview-count>Загрузка...</span></div><div class="broadcast-preview-list" data-broadcast-preview-list></div></div>';
+    body += '<div class="actions"><button class="button button-primary" type="submit">Поставить в очередь</button><a class="button muted-button" href="/?page=broadcasts&tab=history">Открыть историю</a></div></form></div></section>';
+    return body;
   }
 
   async flowPage() {
@@ -664,6 +689,9 @@ export class AdminController {
     if (!title || (!body && !mediaFileId)) throw new Error('Заполните название и текст или file_id');
 
     const recipients = await this.broadcastRecipients(audience, eventId);
+    if (recipients.length === 0) {
+      throw new Error('По выбранной аудитории нет получателей');
+    }
     await withTransaction(async (tx) => {
       const inserted = await tx.execute(
         `INSERT INTO broadcast_campaigns
@@ -696,6 +724,63 @@ export class AdminController {
     this.flash(`Рассылка поставлена в очередь: ${recipients.length} получателей`);
   }
 
+  async processMessageQueue() {
+    const result = await processDueMessages({ limit: 100 });
+    this.flash(`Очередь обработана: рассылки ${result.broadcasts.sent} отправлено, ${result.broadcasts.failed} ошибок, ${result.broadcasts.picked} взято в работу`);
+  }
+
+  async broadcastRecipientsJson(url) {
+    const audience = String(url.searchParams.get('audience') || 'all');
+    const eventId = Number(url.searchParams.get('event_id') || 0);
+    try {
+      if (this.audienceRequiresEvent(audience) && eventId <= 0) {
+        return json({
+          ok: true,
+          requiresEvent: true,
+          count: 0,
+          recipients: [],
+          message: 'Выберите мероприятие',
+        });
+      }
+
+      const recipients = await this.broadcastRecipients(audience, eventId);
+      return json({
+        ok: true,
+        requiresEvent: this.audienceRequiresEvent(audience),
+        count: recipients.length,
+        recipients: recipients.slice(0, 80).map((row) => this.broadcastRecipientPayload(row)),
+        truncated: recipients.length > 80,
+      });
+    } catch (error) {
+      return json({ ok: false, error: error.message }, 400);
+    }
+  }
+
+  async broadcastCampaigns() {
+    return query(
+      `SELECT c.*, e.title AS event_title,
+        COALESCE(s.total, 0) AS total_messages,
+        COALESCE(s.queued, 0) AS queued_messages,
+        COALESCE(s.sent, 0) AS sent_messages,
+        COALESCE(s.failed, 0) AS failed_messages,
+        s.last_error
+       FROM broadcast_campaigns c
+       LEFT JOIN events e ON e.id = c.event_id
+       LEFT JOIN (
+         SELECT campaign_id,
+           COUNT(*) AS total,
+           SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued,
+           SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) AS sent,
+           SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+           MAX(CASE WHEN status = 'failed' THEN error ELSE NULL END) AS last_error
+         FROM broadcast_messages
+         GROUP BY campaign_id
+       ) s ON s.campaign_id = c.id
+       ORDER BY c.created_at DESC
+       LIMIT 50`,
+    );
+  }
+
   async registrationWithDetails(id) {
     return queryOne(
       `SELECT r.*, p.telegram_id, p.full_name, p.company, p.position_title, p.phone, p.email,
@@ -711,13 +796,17 @@ export class AdminController {
 
   async broadcastRecipients(audience, eventId) {
     const params = {};
-    let sql = 'SELECT DISTINCT p.id, p.telegram_id FROM people p';
+    let sql = `SELECT DISTINCT p.id, p.telegram_id, p.full_name, p.username, p.company, p.position_title, p.email,
+      NULL AS attendance, NULL AS status
+      FROM people p`;
     if (audience !== 'all') {
-      sql += ' JOIN registrations r ON r.person_id = p.id';
+      sql = `SELECT DISTINCT p.id, p.telegram_id, p.full_name, p.username, p.company, p.position_title, p.email,
+        r.attendance, r.status
+        FROM people p JOIN registrations r ON r.person_id = p.id`;
       params.eventId = eventId;
     }
     const where = ['p.consent_accepted_at IS NOT NULL'];
-    if (audience !== 'all') {
+    if (this.audienceRequiresEvent(audience)) {
       if (eventId <= 0) throw new Error('Для этой аудитории нужно выбрать мероприятие');
       where.push('r.event_id = :eventId', 'r.archived_at IS NULL');
     }
@@ -731,6 +820,23 @@ export class AdminController {
       where.push("r.status NOT IN ('cancelled','rejected')");
     }
     return query(`${sql} WHERE ${where.join(' AND ')} ORDER BY p.id ASC LIMIT 5000`, params);
+  }
+
+  broadcastRecipientPayload(row) {
+    const name = String(row.full_name || (row.username ? `@${row.username}` : `Telegram ID ${row.telegram_id}`)).trim();
+    const details = [
+      row.company,
+      row.position_title,
+      row.email,
+    ].filter(Boolean).join(' - ');
+    return {
+      id: Number(row.id),
+      telegram_id: Number(row.telegram_id),
+      name,
+      details,
+      status: row.status || '',
+      attendance: row.attendance || '',
+    };
   }
 
   async sendOfflineApproved(row) {
@@ -783,8 +889,41 @@ export class AdminController {
     };
   }
 
+  registrationFilterPanel({ view, eventId, layout, counts, events, selectedEvent, total }) {
+    let body = '<div class="registrations-filterbar">';
+    body += '<div class="registrations-filter-row">';
+    body += `<form class="registration-event-filter" method="get" data-autosubmit-select><input type="hidden" name="page" value="registrations"><input type="hidden" name="view" value="${h(view)}"><input type="hidden" name="layout" value="${h(layout)}">`;
+    body += '<label><span>Мероприятие</span><select name="event_id"><option value="0">Все мероприятия</option>';
+    for (const event of events) {
+      const label = event.date_start ? `${event.title} - ${dateShort(event.date_start)}` : event.title;
+      body += `<option value="${Number(event.id)}" ${eventId === Number(event.id) ? 'selected' : ''}>${h(label)}</option>`;
+    }
+    body += '</select></label>';
+    if (eventId > 0) {
+      body += `<a class="button muted-button" href="${h(this.registrationsUrl(view, 0, layout))}">Сбросить</a>`;
+    }
+    body += '</form>';
+    body += `<div class="registration-filter-group"><span class="filter-label">Люди</span>${this.registrationViewTabs(view, eventId, counts, layout)}</div>`;
+    body += `<div class="registration-filter-group compact"><span class="filter-label">Вид</span>${this.registrationLayoutToggle(view, eventId, layout)}</div>`;
+    body += '</div>';
+    body += this.registrationFilterSummary(view, layout, selectedEvent, total);
+    return `${body}</div>`;
+  }
+
+  registrationFilterSummary(view, layout, selectedEvent, total) {
+    const viewLabels = {
+      all: 'все активные регистрации',
+      online: 'онлайн-регистрации',
+      offline: 'офлайн-регистрации',
+      archived: 'архив',
+    };
+    const layoutLabels = { list: 'список', kanban: 'канбан' };
+    const eventLabel = selectedEvent ? selectedEvent.title : 'все мероприятия';
+    return `<div class="registration-filter-summary"><span>Показываем:</span> <strong>${h(viewLabels[view] || viewLabels.all)}</strong> <span>${h(eventLabel)}</span> <span>${h(layoutLabels[layout] || layoutLabels.list)}</span> <b>${Number(total)} записей</b></div>`;
+  }
+
   registrationViewTabs(view, eventId, counts, layout) {
-    const tabs = { all: 'Все', online: 'Онлайн', offline: 'Офлайн', archived: 'Архив' };
+    const tabs = { all: 'Все активные', online: 'Онлайн', offline: 'Офлайн', archived: 'Архив' };
     let body = '<nav class="view-tabs">';
     for (const [key, label] of Object.entries(tabs)) {
       body += `<a class="${view === key ? 'active' : ''}" href="${h(this.registrationsUrl(key, eventId, layout))}"><span>${h(label)}</span><strong>${Number(counts[key] || 0)}</strong></a>`;
@@ -963,6 +1102,41 @@ export class AdminController {
       event_offline_approved: 'Подтвержденный офлайн',
       event_offline_pending: 'Офлайн на модерации',
     };
+  }
+
+  audienceRequiresEvent(audience) {
+    return audience !== 'all';
+  }
+
+  broadcastDeliveryStats(campaign) {
+    const total = Number(campaign.total_messages || 0);
+    const sent = Number(campaign.sent_messages || 0);
+    const queued = Number(campaign.queued_messages || 0);
+    const failed = Number(campaign.failed_messages || 0);
+    if (total === 0) {
+      return '<span class="muted">Нет получателей</span>';
+    }
+
+    return `<div class="broadcast-stats"><span class="badge ok">Отправлено ${sent}</span><span class="badge warn">В очереди ${queued}</span>${failed > 0 ? `<span class="badge danger">Ошибки ${failed}</span>` : ''}<span class="muted">Всего ${total}</span></div>`;
+  }
+
+  broadcastStatusLabel(campaign) {
+    const status = String(campaign.status || '');
+    const queued = Number(campaign.queued_messages || 0);
+    const failed = Number(campaign.failed_messages || 0);
+    if (failed > 0) {
+      return '<span class="badge danger">Есть ошибки</span>';
+    }
+    if (queued > 0) {
+      return '<span class="badge warn">Ждет воркер</span>';
+    }
+    if (status === 'sent') {
+      return '<span class="badge ok">Завершена</span>';
+    }
+    if (status === 'failed') {
+      return '<span class="badge danger">Ошибка</span>';
+    }
+    return `<span class="badge">${h(status || 'queued')}</span>`;
   }
 
   statusLabel(status) {
@@ -1190,7 +1364,8 @@ export class AdminController {
     }
     body += `</nav><a class="logout" href="/?action=logout" title="Выйти">${this.icon('logout')}<span class="nav-label">Выйти</span></a></aside>`;
     body += `<main class="main"><header class="topbar"><h1>${h(title)}</h1><span>${h(config.appUrl)}</span></header>`;
-    if (flash) body += `<div class="notice notice-${h(flash.type)}">${h(flash.message)}</div>`;
+    const showFlash = flash && page !== 'registrations';
+    if (showFlash) body += `<div class="notice notice-${h(flash.type)}">${h(flash.message)}</div>`;
     return `${body}<div class="main-content">${content}</div></main><script src="/assets/admin.js"></script></body></html>`;
   }
 
