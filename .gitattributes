@@ -1,0 +1,6 @@
+# Деплой идёт на Linux — критичные для рантайма файлы держим в LF,
+# чтобы CRLF с Windows-машины не ломал shell-скрипты и YAML на сервере/раннере.
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.sh        text eol=lf
+Dockerfile  text eol=lf
