@@ -378,6 +378,7 @@ export class BotController {
     await this.registrations.update(registration.id, {
       facecast_login: credentials.login,
       facecast_password: credentials.password,
+      facecast_ticket_id: credentials.ticketId,
       facecast_url: credentials.url,
       approved_at: registration.approved_at || nowSql(),
     });
@@ -412,11 +413,8 @@ export class BotController {
 
   async sendOnlineAccess(chatId, event, registration) {
     const url = registration.facecast_url || event.facecast_url || config.facecast.defaultStreamUrl || '';
-    const access = [];
-    if (registration.facecast_login) access.push(`<b>Логин:</b> ${h(registration.facecast_login)}`);
-    if (registration.facecast_password) access.push(`<b>Пароль:</b> ${h(registration.facecast_password)}`);
     const text = 'Готово, вы зарегистрированы онлайн! 💻\n\n'
-      + (access.length > 0 ? `Данные для подключения:\n${access.join('\n')}\n` : 'Ссылка на эфир будет в кнопке ниже.\n')
+      + 'Персональная ссылка на просмотр будет в кнопке ниже.\n'
       + `<b>Название:</b> ${h(event.title)}\n`
       + `<b>Дата:</b> ${h(dateShort(event.date_start))}\n`
       + `<b>Время подключения:</b> ${h(timeOnly(event.online_start || event.date_start))}\n\n`
@@ -424,7 +422,7 @@ export class BotController {
 
     const buttons = [];
     if (url) {
-      buttons.push([{ text: 'Ссылка на эфир', url }]);
+      buttons.push([{ text: 'Персональная ссылка на эфир', url }]);
     }
     buttons.push([{ text: 'Главное меню', callback_data: 'main_menu' }]);
 

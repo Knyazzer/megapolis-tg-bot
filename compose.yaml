@@ -31,9 +31,12 @@ services:
       FACECAST_UID: ${FACECAST_UID:-}
       FACECAST_API_KEY: ${FACECAST_API_KEY:-}
       FACECAST_API_TOKEN: ${FACECAST_API_TOKEN:-}
+      FACECAST_REGISTRATION_MODE: ${FACECAST_REGISTRATION_MODE:-userreg}
       FACECAST_REGISTRATION_ENDPOINT: ${FACECAST_REGISTRATION_ENDPOINT:-insert_key}
+      FACECAST_USERREG_ENDPOINT: ${FACECAST_USERREG_ENDPOINT:-https://kassa.facecast.net/api/viewers/register}
       FACECAST_CHANNEL_ID: ${FACECAST_CHANNEL_ID:-}
       FACECAST_DEFAULT_STREAM_URL: ${FACECAST_DEFAULT_STREAM_URL:-}
+      FACECAST_ACCESS_QUERY_PARAM: ${FACECAST_ACCESS_QUERY_PARAM:-key}
       FACECAST_PASSWORD_QUERY_PARAM: ${FACECAST_PASSWORD_QUERY_PARAM:-password}
       FACECAST_DIRECT_LINK_FALLBACK: ${FACECAST_DIRECT_LINK_FALLBACK:-false}
       FACECAST_DEMO_MODE: ${FACECAST_DEMO_MODE:-true}
@@ -77,9 +80,12 @@ services:
       FACECAST_UID: ${FACECAST_UID:-}
       FACECAST_API_KEY: ${FACECAST_API_KEY:-}
       FACECAST_API_TOKEN: ${FACECAST_API_TOKEN:-}
+      FACECAST_REGISTRATION_MODE: ${FACECAST_REGISTRATION_MODE:-userreg}
       FACECAST_REGISTRATION_ENDPOINT: ${FACECAST_REGISTRATION_ENDPOINT:-insert_key}
+      FACECAST_USERREG_ENDPOINT: ${FACECAST_USERREG_ENDPOINT:-https://kassa.facecast.net/api/viewers/register}
       FACECAST_CHANNEL_ID: ${FACECAST_CHANNEL_ID:-}
       FACECAST_DEFAULT_STREAM_URL: ${FACECAST_DEFAULT_STREAM_URL:-}
+      FACECAST_ACCESS_QUERY_PARAM: ${FACECAST_ACCESS_QUERY_PARAM:-key}
       FACECAST_PASSWORD_QUERY_PARAM: ${FACECAST_PASSWORD_QUERY_PARAM:-password}
       FACECAST_DIRECT_LINK_FALLBACK: ${FACECAST_DIRECT_LINK_FALLBACK:-false}
       FACECAST_DEMO_MODE: ${FACECAST_DEMO_MODE:-true}
@@ -103,6 +109,7 @@ services:
       - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ./database/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
       - ./database/migrations/2026_06_18_add_photo_broadcast_type.sql:/docker-entrypoint-initdb.d/03-add-photo-broadcast-type.sql:ro
+      - ./database/migrations/2026_06_19_add_facecast_ticket_id.sql:/docker-entrypoint-initdb.d/04-add-facecast-ticket-id.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u\"$${MYSQL_USER}\" -p\"$${MYSQL_PASSWORD}\" --silent"]
       interval: 10s

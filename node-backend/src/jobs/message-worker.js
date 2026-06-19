@@ -212,7 +212,7 @@ function confirmKeyboard(registrationId) {
 function onlineKeyboard(registrationId, url) {
   const buttons = [];
   if (url) {
-    buttons.push([{ text: 'Ссылка на эфир', url }]);
+    buttons.push([{ text: 'Персональная ссылка на эфир', url }]);
   }
   buttons.push([{ text: 'Напомнить доступ', callback_data: `credentials:${registrationId}` }]);
   buttons.push([{ text: 'Главное меню', callback_data: 'main_menu' }]);
@@ -227,20 +227,13 @@ function postpromoText(row) {
     text += '\n\nТакже можно посмотреть запись эфира, если хочется вернуться к главным мыслям.';
   }
 
-  if (row.facecast_login || row.facecast_password) {
-    const access = [];
-    if (row.facecast_login) access.push(`<b>Логин:</b> ${h(row.facecast_login)}`);
-    if (row.facecast_password) access.push(`<b>Пароль:</b> ${h(row.facecast_password)}`);
-    text += `\n\n${access.join('\n')}`;
-  }
-
   return `${text}\n\n<b>Название:</b> ${h(row.title || '')}`;
 }
 
 function postpromoKeyboard(row, url) {
   const buttons = [];
   if (url) {
-    buttons.push([{ text: 'Ссылка на эфир', url }]);
+    buttons.push([{ text: 'Персональная ссылка на эфир', url }]);
   }
   if (row.photo_album_url) {
     buttons.push([{ text: 'Подборка фото', url: String(row.photo_album_url) }]);

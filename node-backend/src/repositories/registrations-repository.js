@@ -6,6 +6,7 @@ const REGISTRATION_FIELDS = [
   'status',
   'facecast_login',
   'facecast_password',
+  'facecast_ticket_id',
   'facecast_url',
   'rejection_reason',
   'approved_at',

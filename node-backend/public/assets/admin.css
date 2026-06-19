@@ -349,6 +349,7 @@ td {
   padding: 12px 10px;
   text-align: left;
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 th {
@@ -1121,6 +1122,7 @@ body.admin-page:not(.admin-page-flow) .registrations-workspace > table tbody,
 body.admin-page:not(.admin-page-flow) .registrations-workspace > table tr {
   display: table;
   width: 100%;
+  min-width: 900px;
   table-layout: fixed;
 }
 
@@ -1849,6 +1851,10 @@ body.admin-page:not(.admin-page-flow) .main-content > .simulator-workspace {
     min-width: 0;
   }
 
+  .filters label {
+    min-width: 0;
+  }
+
   .layout-toggle {
     width: fit-content;
   }
@@ -1872,5 +1878,77 @@ body.admin-page:not(.admin-page-flow) .main-content > .simulator-workspace {
 
   .sidebar a:hover::after {
     display: block;
+  }
+}
+
+@media (max-width: 520px) {
+  :root {
+    --sidebar-collapsed-width: 56px;
+  }
+
+  .sidebar {
+    padding: 12px 6px;
+  }
+
+  .main {
+    padding: 10px;
+  }
+
+  .panel {
+    padding: 12px;
+  }
+
+  .topbar {
+    gap: 4px;
+    margin-bottom: 10px;
+  }
+
+  .topbar h1 {
+    font-size: 22px;
+  }
+
+  .panel-head {
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .registrations-toolbar,
+  .filters,
+  .reception-filter {
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .view-tabs {
+    gap: 6px;
+  }
+
+  .view-tabs a,
+  .layout-toggle a {
+    min-height: 34px;
+    padding: 6px 8px;
+  }
+
+  .kanban {
+    --kanban-column-width: 292px;
+    gap: 10px;
+  }
+
+  .reception-list {
+    gap: 10px;
+  }
+
+  .reception-row {
+    padding: 10px;
+  }
+
+  .reception-action,
+  .reception-action .inline-form,
+  .checkin-toggle {
+    width: 100%;
+  }
+
+  .checkin-toggle {
+    min-height: 38px;
   }
 }
