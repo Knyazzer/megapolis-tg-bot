@@ -1,0 +1,14 @@
+# Владение инфраструктурой.
+# Эти пути меняет ТОЛЬКО владелец репозитория (@Knyazzer).
+# В защите ветки master включено "Require review from Code Owners" —
+# любой PR, трогающий эти файлы, не смёржится без аппрува владельца.
+#
+# Цель: коллега и его Codex разрабатывают КОД приложения (node-backend/src и т.п.)
+# и катят сами, но НЕ переписывают CI/CD, деплой, compose и правила.
+# Предыстория — см. docs/POSTMORTEM-2026-06-19-prod-outage.md
+
+/.github/                  @Knyazzer
+/compose.yaml              @Knyazzer
+/compose.prod.yml          @Knyazzer
+/node-backend/Dockerfile   @Knyazzer
+/RULES.md                  @Knyazzer
