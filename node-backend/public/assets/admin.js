@@ -490,6 +490,138 @@
     simFeed.scrollTop = simFeed.scrollHeight;
   }
 
+  var broadcastForm = document.querySelector('form[data-broadcast-form]');
+  if (broadcastForm) {
+    var audienceSelect = broadcastForm.querySelector('select[name="audience"]');
+    var eventSelect = broadcastForm.querySelector('select[name="event_id"]');
+    var preview = document.querySelector('[data-broadcast-preview]');
+    var previewCount = document.querySelector('[data-broadcast-preview-count]');
+    var previewList = document.querySelector('[data-broadcast-preview-list]');
+    var submitButton = broadcastForm.querySelector('button[type="submit"]');
+    var previewRequestId = 0;
+
+    function escapeText(text) {
+      return String(text || '').replace(/[&<>"']/g, function (char) {
+        return {
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#039;',
+        }[char];
+      });
+    }
+
+    function setBroadcastSubmit(enabled) {
+      if (submitButton) {
+        submitButton.disabled = !enabled;
+      }
+    }
+
+    function broadcastRecipientMeta(row) {
+      var parts = [];
+      if (row.attendance) {
+        parts.push(row.attendance === 'online' ? 'онлайн' : 'офлайн');
+      }
+      if (row.status) {
+        parts.push(row.status);
+      }
+      if (row.details) {
+        parts.push(row.details);
+      }
+      return parts.join(' · ');
+    }
+
+    function renderBroadcastPreview(payload) {
+      var recipients = payload.recipients || [];
+      if (!preview || !previewCount || !previewList) {
+        return;
+      }
+
+      preview.classList.toggle('is-empty', recipients.length === 0);
+      if (payload.message) {
+        previewCount.textContent = payload.message;
+      } else {
+        previewCount.textContent = payload.count + ' получателей';
+      }
+
+      if (recipients.length === 0) {
+        previewList.innerHTML = '<p class="empty">Получателей пока нет.</p>';
+        setBroadcastSubmit(false);
+        return;
+      }
+
+      previewList.innerHTML = recipients.map(function (row) {
+        var meta = broadcastRecipientMeta(row);
+        return '<article class="broadcast-recipient">'
+          + '<strong>' + escapeText(row.name) + '</strong>'
+          + (meta ? '<span>' + escapeText(meta) + '</span>' : '')
+          + '<em>ID ' + escapeText(row.telegram_id) + '</em>'
+          + '</article>';
+      }).join('') + (payload.truncated ? '<p class="hint">Показаны первые 80 получателей.</p>' : '');
+      setBroadcastSubmit(true);
+    }
+
+    function loadBroadcastPreview() {
+      if (!audienceSelect || !eventSelect || !window.fetch) {
+        return;
+      }
+
+      previewRequestId += 1;
+      var requestId = previewRequestId;
+      setBroadcastSubmit(false);
+      if (previewCount) {
+        previewCount.textContent = 'Загрузка...';
+      }
+      if (previewList) {
+        previewList.innerHTML = '';
+      }
+
+      var params = new URLSearchParams({
+        action: 'broadcast_recipients',
+        audience: audienceSelect.value || 'all',
+        event_id: eventSelect.value || '0',
+      });
+
+      fetch('/?' + params.toString(), {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      }).then(function (response) {
+        if (!response.ok) {
+          throw new Error('request failed');
+        }
+        return response.json();
+      }).then(function (payload) {
+        if (requestId !== previewRequestId) {
+          return;
+        }
+        if (!payload || payload.ok !== true) {
+          throw new Error((payload && payload.error) || 'request failed');
+        }
+        renderBroadcastPreview(payload);
+      }).catch(function () {
+        if (requestId !== previewRequestId) {
+          return;
+        }
+        if (previewCount) {
+          previewCount.textContent = 'Не удалось загрузить';
+        }
+        if (previewList) {
+          previewList.innerHTML = '<p class="empty">Обновите страницу и попробуйте ещё раз.</p>';
+        }
+        setBroadcastSubmit(false);
+      });
+    }
+
+    if (audienceSelect) {
+      audienceSelect.addEventListener('change', loadBroadcastPreview);
+    }
+    if (eventSelect) {
+      eventSelect.addEventListener('change', loadBroadcastPreview);
+    }
+    loadBroadcastPreview();
+  }
+
   var modal = document.querySelector('.flow-modal');
   if (!modal) {
     return;

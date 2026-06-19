@@ -143,7 +143,7 @@ function scheduledMessageIsStale(row) {
 }
 
 function scheduledMessagePayload(row) {
-  const url = String(row.facecast_url || row.event_facecast_url || '');
+  const url = String(row.facecast_url || '');
   const eventTitle = String(row.title || 'мероприятие');
   const date = dateShort(row.date_start);
   const range = timeRange(row.date_start, row.date_end);

@@ -47,7 +47,7 @@ export const config = {
     accessQueryParam: String(env('FACECAST_ACCESS_QUERY_PARAM', 'key')),
     passwordQueryParam: String(env('FACECAST_PASSWORD_QUERY_PARAM', 'password')),
     directLinkFallback: Boolean(env('FACECAST_DIRECT_LINK_FALLBACK', false)),
-    demoMode: Boolean(env('FACECAST_DEMO_MODE', true)),
+    demoMode: Boolean(env('FACECAST_DEMO_MODE', String(env('NODE_ENV', 'development')) !== 'production')),
   },
   devTools: {
     enabled: Boolean(env('TEST_STAND_ENABLED', String(env('NODE_ENV', 'development')) !== 'production')),

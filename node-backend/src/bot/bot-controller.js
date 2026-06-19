@@ -170,6 +170,10 @@ export class BotController {
       if (registration && Number(registration.person_id) === Number(person.id)) {
         const event = await this.events.findById(Number(registration.event_id));
         if (event) {
+          if (registration.attendance === 'online' && registration.status === 'approved' && !registration.facecast_url) {
+            await this.registerOnline(chatId, person, event);
+            return;
+          }
           await this.sendOnlineAccess(chatId, event, registration);
         }
       }
@@ -351,7 +355,7 @@ export class BotController {
     }
 
     const existing = await this.registrations.findByPersonEvent(person.id, event.id);
-    if (existing && existing.attendance === 'online' && existing.status === 'approved' && existing.facecast_login) {
+    if (existing && existing.attendance === 'online' && existing.status === 'approved' && existing.facecast_url) {
       await this.sendOnlineAccess(chatId, event, existing);
       return;
     }
@@ -412,9 +416,12 @@ export class BotController {
   }
 
   async sendOnlineAccess(chatId, event, registration) {
-    const url = registration.facecast_url || event.facecast_url || config.facecast.defaultStreamUrl || '';
+    const url = String(registration.facecast_url || '').trim();
+    const accessLine = url
+      ? 'Персональная ссылка на просмотр будет в кнопке ниже.\n'
+      : 'Персональная ссылка пока не сформировалась автоматически. Попробуйте получить её чуть позже или напишите организаторам.\n';
     const text = 'Готово, вы зарегистрированы онлайн! 💻\n\n'
-      + 'Персональная ссылка на просмотр будет в кнопке ниже.\n'
+      + accessLine
       + `<b>Название:</b> ${h(event.title)}\n`
       + `<b>Дата:</b> ${h(dateShort(event.date_start))}\n`
       + `<b>Время подключения:</b> ${h(timeOnly(event.online_start || event.date_start))}\n\n`
@@ -423,6 +430,8 @@ export class BotController {
     const buttons = [];
     if (url) {
       buttons.push([{ text: 'Персональная ссылка на эфир', url }]);
+    } else if (registration.id) {
+      buttons.push([{ text: 'Получить ссылку', callback_data: `credentials:${registration.id}` }]);
     }
     buttons.push([{ text: 'Главное меню', callback_data: 'main_menu' }]);
 
