@@ -9,12 +9,14 @@ const facecast = new FacecastClient();
 
 export async function processDueMessages({ limit = 50 } = {}) {
   const telegram = new TelegramClient();
-  const scheduled = await processScheduledMessages(telegram, limit);
-  const broadcasts = await processBroadcastMessages(telegram, Math.max(limit, 60));
+  const safeLimit = sqlLimit(limit);
+  const scheduled = await processScheduledMessages(telegram, safeLimit);
+  const broadcasts = await processBroadcastMessages(telegram, Math.max(safeLimit, 60));
   return { scheduled, broadcasts };
 }
 
 async function processScheduledMessages(telegram, limit) {
+  const rowLimit = sqlLimit(limit);
   const rows = await query(
     `SELECT
        sm.*,
@@ -44,8 +46,7 @@ async function processScheduledMessages(telegram, limit) {
        AND sm.failed_at IS NULL
        AND sm.send_at <= CURRENT_TIMESTAMP
      ORDER BY sm.send_at ASC
-     LIMIT :limit`,
-    { limit },
+     LIMIT ${rowLimit}`,
   );
 
   let sent = 0;
@@ -75,14 +76,14 @@ async function processScheduledMessages(telegram, limit) {
 }
 
 async function processBroadcastMessages(telegram, limit) {
+  const rowLimit = sqlLimit(limit);
   const rows = await query(
     `SELECT bm.*, c.content_type, c.body, c.media_file_id, c.id AS campaign_id
      FROM broadcast_messages bm
      JOIN broadcast_campaigns c ON c.id = bm.campaign_id
      WHERE bm.status = 'queued'
      ORDER BY bm.id ASC
-     LIMIT :limit`,
-    { limit },
+     LIMIT ${rowLimit}`,
   );
 
   let sent = 0;
@@ -128,6 +129,14 @@ async function processBroadcastMessages(telegram, limit) {
 function telegramMediaCaption(text) {
   const caption = String(text || '').trim();
   return caption.length > 0 && caption.length <= 900 ? caption : '';
+}
+
+function sqlLimit(limit) {
+  const value = Number(limit);
+  if (!Number.isFinite(value)) {
+    return 50;
+  }
+  return Math.max(1, Math.min(500, Math.trunc(value)));
 }
 
 function scheduledMessageIsStale(row) {
