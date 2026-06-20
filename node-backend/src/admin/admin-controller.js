@@ -896,32 +896,66 @@ export class AdminController {
       throw new Error('По выбранной аудитории нет получателей');
     }
     await withTransaction(async (tx) => {
-      const inserted = await tx.execute(
-        `INSERT INTO broadcast_campaigns
-         (title, audience, event_id, content_type, body, media_file_id, status, created_at, updated_at)
-         VALUES (:title, :audience, :eventId, :contentType, :body, :mediaFileId, 'queued', :now, :now)`,
-        {
-          title,
-          audience,
-          eventId: eventId > 0 ? eventId : null,
-          contentType,
-          body,
-          mediaFileId,
-          now: nowSql(),
-        },
-      );
-      for (const recipient of recipients) {
-        await tx.execute(
-          `${isSqlite() ? 'INSERT OR IGNORE' : 'INSERT IGNORE'} INTO broadcast_messages
-           (campaign_id, person_id, telegram_id, status, created_at, updated_at)
-           VALUES (:campaignId, :personId, :telegramId, 'queued', :now, :now)`,
-          {
-            campaignId: inserted.insertId,
-            personId: recipient.id,
-            telegramId: recipient.telegram_id,
-            now: nowSql(),
-          },
+      const createdAt = nowSql();
+      const campaignValues = {
+        title,
+        audience,
+        eventId: eventId > 0 ? eventId : null,
+        contentType,
+        body: body || null,
+        mediaFileId: mediaFileId || null,
+        now: createdAt,
+      };
+      const inserted = isSqlite()
+        ? await tx.execute(
+          `INSERT INTO broadcast_campaigns
+           (title, audience, event_id, content_type, body, media_file_id, status, created_at, updated_at)
+           VALUES (:title, :audience, :eventId, :contentType, :body, :mediaFileId, 'queued', :now, :now)`,
+          campaignValues,
+        )
+        : await tx.execute(
+          `INSERT INTO broadcast_campaigns
+           (title, audience, event_id, content_type, body, media_file_id, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+          [
+            campaignValues.title,
+            campaignValues.audience,
+            campaignValues.eventId,
+            campaignValues.contentType,
+            campaignValues.body,
+            campaignValues.mediaFileId,
+            campaignValues.now,
+            campaignValues.now,
+          ],
         );
+      const campaignId = Number(inserted.insertId || 0);
+      if (campaignId <= 0) {
+        throw new Error('Не удалось создать кампанию рассылки');
+      }
+
+      for (const recipient of recipients) {
+        const personId = Number(recipient.id || 0);
+        const telegramId = String(recipient.telegram_id || '').trim();
+        if (personId <= 0 || !telegramId) {
+          throw new Error('В аудитории есть получатель без Telegram ID');
+        }
+
+        const queuedAt = nowSql();
+        if (isSqlite()) {
+          await tx.execute(
+            `INSERT OR IGNORE INTO broadcast_messages
+             (campaign_id, person_id, telegram_id, status, created_at, updated_at)
+             VALUES (:campaignId, :personId, :telegramId, 'queued', :now, :now)`,
+            { campaignId, personId, telegramId, now: queuedAt },
+          );
+        } else {
+          await tx.execute(
+            `INSERT IGNORE INTO broadcast_messages
+             (campaign_id, person_id, telegram_id, status, created_at, updated_at)
+             VALUES (?, ?, ?, 'queued', ?, ?)`,
+            [campaignId, personId, telegramId, queuedAt, queuedAt],
+          );
+        }
       }
     });
     this.flash(`Рассылка поставлена в очередь: ${recipients.length} получателей`);
