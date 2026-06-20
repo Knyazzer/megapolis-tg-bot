@@ -262,26 +262,26 @@ export class BotController {
 
     if (state === 'ask_name') {
       if (text.length < 2) {
-        await this.telegram.sendMessage(chatId, 'Напишите, пожалуйста, имя и фамилию текстом, чтобы мы корректно оформили регистрацию.', removeKeyboard());
+        await this.telegram.sendMessage(chatId, '<b>Анкета, шаг 1 из 5</b>\n\nНапишите, пожалуйста, имя и фамилию текстом, чтобы мы корректно оформили регистрацию.', removeKeyboard());
         return;
       }
       await this.people.updateFields(person.id, { full_name: text });
       await this.people.setState(person.id, 'ask_company');
-      await this.telegram.sendMessage(chatId, 'Из какой вы компании?', removeKeyboard());
+      await this.telegram.sendMessage(chatId, '<b>Шаг 2 из 5</b>\n\nИз какой вы компании?', removeKeyboard());
       return;
     }
 
     if (state === 'ask_company') {
       await this.people.updateFields(person.id, { company: text });
       await this.people.setState(person.id, 'ask_position');
-      await this.telegram.sendMessage(chatId, 'А какая у вас должность?', removeKeyboard());
+      await this.telegram.sendMessage(chatId, '<b>Шаг 3 из 5</b>\n\nА какая у вас должность?', removeKeyboard());
       return;
     }
 
     if (state === 'ask_position') {
       await this.people.updateFields(person.id, { position_title: text });
       await this.people.setState(person.id, 'ask_phone');
-      await this.telegram.sendMessage(chatId, 'Поделитесь, пожалуйста, номером телефона. Можно отправить его кнопкой ниже.', phoneKeyboard());
+      await this.telegram.sendMessage(chatId, '<b>Шаг 4 из 5</b>\n\nПоделитесь, пожалуйста, номером телефона. Можно отправить его кнопкой ниже.', phoneKeyboard());
       return;
     }
 
@@ -298,7 +298,7 @@ export class BotController {
       }
       await this.people.updateFields(person.id, { phone });
       await this.people.setState(person.id, 'ask_email');
-      await this.telegram.sendMessage(chatId, 'И последний шаг: напишите вашу почту.', removeKeyboard());
+      await this.telegram.sendMessage(chatId, '<b>Шаг 5 из 5</b>\n\nИ последний шаг: напишите вашу почту.', removeKeyboard());
       return;
     }
 
@@ -309,7 +309,7 @@ export class BotController {
       }
       await this.people.updateFields(person.id, { email: text.toLowerCase() });
       await this.people.setState(person.id, 'registered');
-      await this.telegram.sendMessage(chatId, 'Готово, спасибо! Теперь можно выбрать мероприятие ✨', eventsMenuKeyboard());
+      await this.telegram.sendMessage(chatId, '<b>Готово, спасибо!</b> ✨\n\nАнкета собрана. Теперь можно выбрать мероприятие.', eventsMenuKeyboard());
       return;
     }
 
@@ -320,27 +320,27 @@ export class BotController {
     const state = String(person.state || 'new');
 
     if (state === 'ask_name') {
-      await this.telegram.sendMessage(chatId, 'Согласие принято. Напишите, пожалуйста, имя и фамилию.', removeKeyboard());
+      await this.telegram.sendMessage(chatId, '<b>Согласие принято.</b>\n\nНапишите, пожалуйста, имя и фамилию.', removeKeyboard());
       return;
     }
 
     if (state === 'ask_company') {
-      await this.telegram.sendMessage(chatId, 'Согласие принято. Из какой вы компании?', removeKeyboard());
+      await this.telegram.sendMessage(chatId, '<b>Согласие принято.</b>\n\nИз какой вы компании?', removeKeyboard());
       return;
     }
 
     if (state === 'ask_position') {
-      await this.telegram.sendMessage(chatId, 'Согласие принято. А какая у вас должность?', removeKeyboard());
+      await this.telegram.sendMessage(chatId, '<b>Согласие принято.</b>\n\nА какая у вас должность?', removeKeyboard());
       return;
     }
 
     if (state === 'ask_phone') {
-      await this.telegram.sendMessage(chatId, 'Согласие принято. Поделитесь, пожалуйста, номером телефона.', phoneKeyboard());
+      await this.telegram.sendMessage(chatId, '<b>Согласие принято.</b>\n\nПоделитесь, пожалуйста, номером телефона.', phoneKeyboard());
       return;
     }
 
     if (state === 'ask_email') {
-      await this.telegram.sendMessage(chatId, 'Согласие принято. Напишите вашу почту.', removeKeyboard());
+      await this.telegram.sendMessage(chatId, '<b>Согласие принято.</b>\n\nНапишите вашу почту.', removeKeyboard());
       return;
     }
 
@@ -362,9 +362,9 @@ export class BotController {
   }
 
   async sendWelcome(chatId) {
-    const text = 'Здравствуйте! Это бот Мегаполис Медиа 👋\n\n'
-      + 'Здесь можно зарегистрироваться на наши митапы, эфиры и деловые встречи.\n\n'
-      + 'Давайте познакомимся, чтобы мы могли корректно оформить вашу регистрацию.';
+    const text = '<b>Мегаполис Медиа на связи 👋</b>\n\n'
+      + 'Здесь можно зарегистрироваться на митапы, эфиры и деловые встречи.\n\n'
+      + 'Сначала коротко познакомимся: это нужно для регистрации, допуска к эфиру и связи с вами. Анкета без марафона, обещаем 🙂';
 
     await this.telegram.sendMessage(chatId, text, startRegistrationKeyboard());
   }
@@ -376,15 +376,15 @@ export class BotController {
   async acceptConsentAndAskName(chatId, person) {
     await this.people.acceptConsent(person.id);
     await this.people.setState(person.id, 'ask_name');
-    await this.telegram.sendMessage(chatId, 'Спасибо! Давайте познакомимся 🙂 Напишите, пожалуйста, имя и фамилию.', removeKeyboard());
+    await this.telegram.sendMessage(chatId, '<b>Спасибо!</b>\n\nДавайте познакомимся 🙂 Напишите, пожалуйста, имя и фамилию.', removeKeyboard());
   }
 
   async sendMainMenu(chatId) {
-    await this.telegram.sendMessage(chatId, 'Главное меню рядом — выберите действие на клавиатуре ниже 🙂', mainMenuKeyboard());
+    await this.telegram.sendMessage(chatId, '<b>Главное меню</b>\n\nВыберите действие на клавиатуре ниже 🙂', mainMenuKeyboard());
   }
 
   async sendSocialLinks(chatId) {
-    await this.telegram.sendMessage(chatId, 'Мы рядом в соцсетях и на сайте:', inlineKeyboard([
+    await this.telegram.sendMessage(chatId, '<b>Мы рядом</b>\n\nНовости, анонсы и материалы публикуем здесь:', inlineKeyboard([
       [{ text: 'Телеграм канал', url: config.links.telegramChannel }],
       [{ text: 'Сайт', url: config.links.companySite }],
     ]));
@@ -395,7 +395,7 @@ export class BotController {
     if (rows.length === 0) {
       await this.telegram.sendMessage(
         chatId,
-        'Пока у вас нет активных регистраций. Откройте ближайшие мероприятия и выберите удобный формат участия 🙂',
+        '<b>Активных регистраций пока нет.</b>\n\nОткройте ближайшие мероприятия и выберите удобный формат участия 🙂',
         mainMenuKeyboard(),
       );
       return;
@@ -415,7 +415,7 @@ export class BotController {
 
     await this.telegram.sendMessage(
       chatId,
-      `Ваши регистрации:\n\n${lines.join('\n\n')}`,
+      `<b>Ваши регистрации</b>\n\n${lines.join('\n\n')}`,
       mainMenuKeyboard(),
     );
   }
@@ -423,7 +423,7 @@ export class BotController {
   async sendEvents(chatId) {
     const events = await this.events.listUpcoming();
     if (events.length === 0) {
-      await this.telegram.sendMessage(chatId, 'Пока ближайших мероприятий нет. Как только появится новое событие, мы обязательно расскажем 🙂', mainMenuKeyboard());
+      await this.telegram.sendMessage(chatId, '<b>Пока ближайших мероприятий нет.</b>\n\nКак только появится новое событие, мы обязательно расскажем 🙂', mainMenuKeyboard());
       return;
     }
 
@@ -438,12 +438,12 @@ export class BotController {
     }]);
     buttons.push([{ text: 'Главное меню', callback_data: 'main_menu' }]);
 
-    await this.telegram.sendMessage(chatId, 'Выберите мероприятие, на которое хотите зарегистрироваться:', inlineKeyboard(buttons));
+    await this.telegram.sendMessage(chatId, '<b>Ближайшие мероприятия</b>\n\nВыберите событие, на которое хотите зарегистрироваться:', inlineKeyboard(buttons));
   }
 
   async sendEventDetails(chatId, event) {
     const buttons = this.eventFormatKeyboard(event);
-    let text = 'Отлично, вот что запланировано:\n\n'
+    let text = '<b>Отлично, вот что запланировано</b>\n\n'
       + `<b>Название:</b> ${h(event.title)}\n`
       + `<b>Дата:</b> ${h(dateShort(event.date_start))}\n`
       + `<b>Время:</b> ${h(timeRange(event.date_start, event.date_end))}\n`
@@ -461,14 +461,14 @@ export class BotController {
 
   async registerOffline(chatId, person, event) {
     if (!eventSupportsOffline(event)) {
-      await this.telegram.sendMessage(chatId, 'Для этого события офлайн-участие не предусмотрено. Выберите другой доступный формат, пожалуйста.', this.eventFormatKeyboard(event));
+      await this.telegram.sendMessage(chatId, '<b>Офлайн-формат для этого события не предусмотрен.</b>\n\nВыберите другой доступный формат, пожалуйста.', this.eventFormatKeyboard(event));
       return;
     }
 
     const existing = await this.registrations.findByPersonEvent(person.id, event.id);
     if (existing && existing.attendance === 'offline') {
       if (existing.status === 'pending') {
-        await this.telegram.sendMessage(chatId, 'Ваша заявка на офлайн-участие уже на проверке. Как только модератор подтвердит список гостей, мы пришлём детали 🙂', mainMenuKeyboard());
+        await this.telegram.sendMessage(chatId, '<b>Заявка на офлайн уже на проверке.</b>\n\nКак только модератор подтвердит список гостей, мы пришлём детали. Держим место в поле зрения 🙂', mainMenuKeyboard());
         return;
       }
 
@@ -481,8 +481,9 @@ export class BotController {
     const registration = await this.registrations.upsert(person.id, event.id, 'offline', 'pending');
     await this.planner.cancelAll(registration);
 
-    const text = 'Спасибо, заявка на офлайн-участие принята 🏢\n\n'
-      + 'Организаторы проверят список гостей и пришлют подтверждение. Адрес и детали площадки отправим после подтверждения участия.';
+    const text = '<b>Заявка на офлайн-участие принята 🏢</b>\n\n'
+      + 'Организаторы проверят список гостей и пришлют подтверждение.\n\n'
+      + 'Адрес и детали площадки отправим после подтверждения участия, чтобы у вас не было лишних квестов с навигацией раньше времени.';
 
     await this.telegram.sendMessage(chatId, text, mainMenuKeyboard());
     await this.notifyAdminsAboutOfflineRequest(person, event, registration);
@@ -490,7 +491,7 @@ export class BotController {
 
   async registerOnline(chatId, person, event, { replaceOffline = false } = {}) {
     if (!eventSupportsOnline(event)) {
-      await this.telegram.sendMessage(chatId, 'Для этого события онлайн-участие не предусмотрено. Выберите другой доступный формат, пожалуйста.', this.eventFormatKeyboard(event));
+      await this.telegram.sendMessage(chatId, '<b>Онлайн-формат для этого события не предусмотрен.</b>\n\nВыберите другой доступный формат, пожалуйста.', this.eventFormatKeyboard(event));
       return;
     }
 
@@ -540,7 +541,7 @@ export class BotController {
       });
       await this.telegram.sendMessage(
         chatId,
-        'Сейчас не получилось создать доступ к онлайн-трансляции. Мы уже видим проблему и вернёмся с ссылкой чуть позже.',
+        '<b>Сейчас не получилось создать доступ к онлайн-трансляции.</b>\n\nМы уже видим проблему и вернёмся с ссылкой чуть позже.',
         mainMenuKeyboard(),
       );
       return;
@@ -555,7 +556,7 @@ export class BotController {
       });
       await this.telegram.sendMessage(
         chatId,
-        'Сейчас не получилось создать персональную ссылку на трансляцию. Мы уже видим проблему и вернёмся с ссылкой чуть позже.',
+        '<b>Сейчас не получилось создать персональную ссылку на трансляцию.</b>\n\nМы уже видим проблему и вернёмся с ссылкой чуть позже.',
         mainMenuKeyboard(),
       );
       return;
@@ -578,7 +579,7 @@ export class BotController {
   async switchRegistrationToOnline(chatId, person, registrationId) {
     const registration = await this.registrations.findById(registrationId);
     if (!registration || Number(registration.person_id) !== Number(person.id)) {
-      await this.telegram.sendMessage(chatId, 'Не нашли вашу регистрацию. Откройте ближайшие мероприятия из меню, пожалуйста.');
+      await this.telegram.sendMessage(chatId, '<b>Не нашли вашу регистрацию.</b>\n\nОткройте ближайшие мероприятия из меню, пожалуйста.');
       return;
     }
 
@@ -588,13 +589,13 @@ export class BotController {
     }
 
     if (!eventSupportsOnline(event)) {
-      await this.telegram.sendMessage(chatId, 'Понимаем, планы меняются. У этого события нет онлайн-формата, поэтому просто снимем вас с офлайн-списка у модераторов.');
+      await this.telegram.sendMessage(chatId, '<b>Понимаем, планы меняются.</b>\n\nУ этого события нет онлайн-формата, поэтому просто снимем вас с офлайн-списка у модераторов.');
       await this.registrations.update(registration.id, { status: 'cancelled' });
       await this.planner.cancelAll(registration);
       return;
     }
 
-    await this.telegram.sendMessage(chatId, 'Конечно, планы меняются. Переключаем вас на онлайн-участие 💻');
+    await this.telegram.sendMessage(chatId, '<b>Конечно, планы меняются.</b>\n\nПереключаем вас на онлайн-участие 💻');
     await this.registerOnline(chatId, person, event, { replaceOffline: true });
   }
 
@@ -617,7 +618,7 @@ export class BotController {
       });
       await this.telegram.sendMessage(
         chatId,
-        'Офлайн-регистрация остаётся в силе. Сейчас не получилось создать запасную ссылку на онлайн-трансляцию, мы уже видим проблему и вернёмся к ней чуть позже.',
+        '<b>Офлайн-регистрация остаётся в силе.</b>\n\nСейчас не получилось создать запасную ссылку на онлайн-трансляцию. Мы уже видим проблему и вернёмся к ней чуть позже.',
         mainMenuKeyboard(),
       );
       return;
@@ -633,7 +634,7 @@ export class BotController {
       });
       await this.telegram.sendMessage(
         chatId,
-        'Офлайн-регистрация остаётся в силе. Сейчас не получилось создать персональную запасную ссылку на трансляцию, мы уже видим проблему и вернёмся к ней чуть позже.',
+        '<b>Офлайн-регистрация остаётся в силе.</b>\n\nСейчас не получилось создать персональную запасную ссылку на трансляцию. Мы уже видим проблему и вернёмся к ней чуть позже.',
         mainMenuKeyboard(),
       );
       return;
@@ -655,7 +656,7 @@ export class BotController {
     const accessLine = url
       ? 'Персональная ссылка на просмотр будет в кнопке ниже.\n'
       : 'Персональная ссылка пока не сформировалась автоматически. Попробуйте получить её чуть позже или напишите организаторам.\n';
-    const text = 'Готово, вы зарегистрированы онлайн! 💻\n\n'
+    const text = '<b>Готово, вы зарегистрированы онлайн! 💻</b>\n\n'
       + accessLine
       + `<b>Название:</b> ${h(event.title)}\n`
       + `<b>Дата:</b> ${h(dateShort(event.date_start))}\n`
@@ -677,8 +678,8 @@ export class BotController {
     const url = String(registration.facecast_url || '').trim();
     const isPending = String(registration.status || '') === 'pending';
     const intro = isPending
-      ? 'Ваша заявка на офлайн-участие остаётся на проверке 🏢'
-      : 'Вы остаётесь в списке офлайн-гостей 🏢';
+      ? '<b>Ваша заявка на офлайн-участие остаётся на проверке 🏢</b>'
+      : '<b>Вы остаётесь в списке офлайн-гостей 🏢</b>';
     const priority = isPending
       ? 'Если модераторы подтвердят офлайн-участие, главным вариантом останется встреча на площадке.'
       : 'Главным вариантом оставляем офлайн-встречу, а ссылку держите как запасной доступ.';
@@ -704,7 +705,7 @@ export class BotController {
   }
 
   async sendOfflineAlreadyConfirmed(chatId, event) {
-    const text = 'Вы уже в списке офлайн-гостей 🏢\n\n'
+    const text = '<b>Вы уже в списке офлайн-гостей 🏢</b>\n\n'
       + 'Ждём вас на мероприятии:\n'
       + `<b>Название:</b> ${h(event.title)}\n`
       + `<b>Дата:</b> ${h(dateShort(event.date_start))}\n`
@@ -720,7 +721,7 @@ export class BotController {
       return;
     }
 
-    const text = 'Новая офлайн-регистрация:\n\n'
+    const text = '<b>Новая офлайн-регистрация</b>\n\n'
       + `<b>Мероприятие:</b> ${h(event.title)}\n`
       + `<b>Участник:</b> ${h(person.full_name)}\n`
       + `<b>Компания:</b> ${h(person.company)}\n`
@@ -745,7 +746,7 @@ export class BotController {
 
     await this.telegram.sendMessage(
       chatId,
-      'Сначала давайте познакомимся, чтобы корректно оформить регистрацию.',
+      '<b>Сначала давайте познакомимся.</b>\n\nТак мы корректно оформим регистрацию и не потеряем вас в списке гостей.',
       startRegistrationKeyboard(),
     );
 
@@ -807,9 +808,10 @@ export class BotController {
   }
 
   consentText() {
-    return 'Перед регистрацией нужно согласие на обработку персональных данных. '
-      + 'Мы будем использовать ваши ФИО, компанию, должность, телефон и email для регистрации на мероприятия, коммуникации, допуска к эфиру и отправки материалов. '
-      + 'Оператор: ООО «Мегаполис Медиа», ИНН 7710750836, ОГРН 1097746299034. '
+    return '<b>Согласие на обработку персональных данных</b>\n\n'
+      + 'Перед регистрацией нужно ваше согласие.\n\n'
+      + 'Мы используем ФИО, компанию, должность, телефон и email для регистрации на мероприятия, коммуникации, допуска к эфиру и отправки материалов.\n\n'
+      + 'Оператор: ООО «Мегаполис Медиа», ИНН 7710750836, ОГРН 1097746299034.\n'
       + 'Согласие действует 3 года и может быть отозвано в порядке, предусмотренном законодательством РФ.'
       + `\n\nПолный текст: ${h(config.links.privacy)}`;
   }
