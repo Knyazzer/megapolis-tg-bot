@@ -42,7 +42,22 @@ const server = createServer(async (request, response) => {
 
     if ((request.method === 'GET' || request.method === 'POST') && ['/', '/index.html'].includes(url.pathname)) {
       const session = loadSession(request, response);
-      const form = request.method === 'POST' ? await readFormBody(request) : {};
+      let form = {};
+      if (request.method === 'POST') {
+        try {
+          form = await readFormBody(request);
+        } catch (error) {
+          if (error.status === 413 && session.adminLoggedIn) {
+            session.flash = {
+              message: 'Файл слишком большой для загрузки. Попробуйте файл меньше или проверьте лимит загрузки на сервере.',
+              type: 'error',
+            };
+            sendResult(response, redirect(safeRefererPath(request, url)));
+            return;
+          }
+          throw error;
+        }
+      }
       const result = await new AdminController({ session, response }).handle({
         method: request.method,
         url,
@@ -264,6 +279,10 @@ function readJsonBody(request, limit = 1024 * 1024) {
 }
 
 async function readFormBody(request) {
+  if (requestBodyTooLarge(request, FORM_BODY_LIMIT)) {
+    throw httpError(413, 'Request body is too large');
+  }
+
   const contentTypeHeader = String(request.headers['content-type'] || '');
   if (contentTypeHeader.toLowerCase().startsWith('multipart/form-data')) {
     const boundary = multipartBoundary(contentTypeHeader);
@@ -276,6 +295,11 @@ async function readFormBody(request) {
 
   const raw = await readRawBody(request, FORM_BODY_LIMIT);
   return Object.fromEntries(new URLSearchParams(raw));
+}
+
+function requestBodyTooLarge(request, limit) {
+  const contentLength = Number(request.headers['content-length'] || 0);
+  return Number.isFinite(contentLength) && contentLength > limit;
 }
 
 function readRawBody(request, limit = 1024 * 1024) {
@@ -384,6 +408,23 @@ function httpError(status, message) {
   const error = new Error(message);
   error.status = status;
   return error;
+}
+
+function safeRefererPath(request, currentUrl) {
+  try {
+    const referer = new URL(String(request.headers.referer || ''), currentUrl);
+    if (referer.origin === currentUrl.origin) {
+      return `${referer.pathname}${referer.search}` || '/';
+    }
+  } catch {
+    // Fall back below.
+  }
+
+  return `${currentUrl.pathname}${currentUrl.search}` || '/';
+}
+
+function redirect(location) {
+  return { status: 302, headers: { Location: location }, body: '' };
 }
 
 function sendResult(response, result) {
