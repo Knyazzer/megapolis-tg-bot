@@ -178,6 +178,8 @@ function ensureSqliteSchema(database) {
       consent_accepted_at TEXT NULL,
       state TEXT NOT NULL DEFAULT 'new',
       state_payload TEXT NULL,
+      chat_mode TEXT NOT NULL DEFAULT 'bot',
+      chat_mode_updated_at TEXT NULL,
       last_seen_at TEXT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -283,6 +285,9 @@ function ensureSqliteSchema(database) {
       direction TEXT NOT NULL,
       message_type TEXT NOT NULL DEFAULT 'text',
       text TEXT NULL,
+      media_file_id TEXT NULL,
+      media_name TEXT NULL,
+      media_mime TEXT NULL,
       status TEXT NOT NULL DEFAULT 'received',
       error TEXT NULL,
       sent_at TEXT NULL,
@@ -304,10 +309,15 @@ function ensureSqliteSchema(database) {
 
   ensureSqliteColumn(database, 'registrations', 'archived_at', 'TEXT NULL');
   ensureSqliteColumn(database, 'registrations', 'facecast_ticket_id', 'TEXT NULL');
+  ensureSqliteColumn(database, 'people', 'chat_mode', "TEXT NOT NULL DEFAULT 'bot'");
+  ensureSqliteColumn(database, 'people', 'chat_mode_updated_at', 'TEXT NULL');
   ensureSqliteColumn(database, 'broadcast_campaigns', 'media_blob', 'BLOB NULL');
   ensureSqliteColumn(database, 'broadcast_campaigns', 'media_mime', 'TEXT NULL');
   ensureSqliteColumn(database, 'broadcast_campaigns', 'media_name', 'TEXT NULL');
   ensureSqliteColumn(database, 'broadcast_campaigns', 'media_size', 'INTEGER NULL');
+  ensureSqliteColumn(database, 'chat_messages', 'media_file_id', 'TEXT NULL');
+  ensureSqliteColumn(database, 'chat_messages', 'media_name', 'TEXT NULL');
+  ensureSqliteColumn(database, 'chat_messages', 'media_mime', 'TEXT NULL');
   database.exec('CREATE INDEX IF NOT EXISTS idx_registrations_archived ON registrations (archived_at)');
 
   const count = database.prepare('SELECT COUNT(*) AS total FROM events').get();

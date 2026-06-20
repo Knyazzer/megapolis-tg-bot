@@ -10,6 +10,9 @@ const REQUIRED_TABLES = [
       direction ENUM('in','out') NOT NULL,
       message_type VARCHAR(32) NOT NULL DEFAULT 'text',
       text TEXT NULL,
+      media_file_id VARCHAR(500) NULL,
+      media_name VARCHAR(255) NULL,
+      media_mime VARCHAR(100) NULL,
       status ENUM('received','sent','failed') NOT NULL DEFAULT 'received',
       error TEXT NULL,
       sent_at DATETIME NULL,
@@ -33,7 +36,9 @@ const REQUIRED_COLUMNS = [
   ['people', 'consent_accepted_at', 'DATETIME NULL AFTER email'],
   ['people', 'state', "VARCHAR(64) NOT NULL DEFAULT 'new' AFTER consent_accepted_at"],
   ['people', 'state_payload', 'JSON NULL AFTER state'],
-  ['people', 'last_seen_at', 'DATETIME NULL AFTER state_payload'],
+  ['people', 'chat_mode', "VARCHAR(20) NOT NULL DEFAULT 'bot' AFTER state_payload"],
+  ['people', 'chat_mode_updated_at', 'DATETIME NULL AFTER chat_mode'],
+  ['people', 'last_seen_at', 'DATETIME NULL AFTER chat_mode_updated_at'],
   ['people', 'created_at', 'DATETIME NULL AFTER last_seen_at'],
   ['people', 'updated_at', 'DATETIME NULL AFTER created_at'],
 
@@ -93,7 +98,10 @@ const REQUIRED_COLUMNS = [
   ['chat_messages', 'direction', "ENUM('in','out') NOT NULL AFTER telegram_id"],
   ['chat_messages', 'message_type', "VARCHAR(32) NOT NULL DEFAULT 'text' AFTER direction"],
   ['chat_messages', 'text', 'TEXT NULL AFTER message_type'],
-  ['chat_messages', 'status', "ENUM('received','sent','failed') NOT NULL DEFAULT 'received' AFTER text"],
+  ['chat_messages', 'media_file_id', 'VARCHAR(500) NULL AFTER text'],
+  ['chat_messages', 'media_name', 'VARCHAR(255) NULL AFTER media_file_id'],
+  ['chat_messages', 'media_mime', 'VARCHAR(100) NULL AFTER media_name'],
+  ['chat_messages', 'status', "ENUM('received','sent','failed') NOT NULL DEFAULT 'received' AFTER media_mime"],
   ['chat_messages', 'error', 'TEXT NULL AFTER status'],
   ['chat_messages', 'sent_at', 'DATETIME NULL AFTER error'],
   ['chat_messages', 'created_at', 'DATETIME NULL AFTER sent_at'],
@@ -168,6 +176,7 @@ export async function migrateMysqlSchema() {
   }
 
   await execute('UPDATE people SET state = COALESCE(state, :state)', { state: 'new' });
+  await execute("UPDATE people SET chat_mode = COALESCE(chat_mode, 'bot')");
   await execute('UPDATE events SET is_active = COALESCE(is_active, 1)');
   await execute('UPDATE events SET date_end = date_start WHERE date_end IS NULL AND date_start IS NOT NULL');
 }

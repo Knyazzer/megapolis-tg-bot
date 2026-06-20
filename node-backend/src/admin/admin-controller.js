@@ -1,5 +1,6 @@
 import { config } from '../config.js';
 import { BotController } from '../bot/bot-controller.js';
+import { mainMenuKeyboard as botMainMenuKeyboard } from '../bot/keyboards.js';
 import { execute, isSqlite, query, queryOne, withTransaction } from '../db/mysql.js';
 import { processDueMessages } from '../jobs/message-worker.js';
 import {
@@ -28,6 +29,7 @@ const BROADCAST_UPLOAD_LIMITS = {
   video: 50 * 1024 * 1024,
   video_note: 50 * 1024 * 1024,
 };
+const DIRECT_PHOTO_UPLOAD_LIMIT = 10 * 1024 * 1024;
 
 export class AdminController {
   constructor({ session, response }) {
@@ -100,6 +102,10 @@ export class AdminController {
         await this.createBroadcast(form);
       } else if (action === 'send_direct_message') {
         await this.sendDirectMessage(form);
+      } else if (action === 'start_human_chat') {
+        await this.startHumanChat(form);
+      } else if (action === 'end_human_chat') {
+        await this.endHumanChat(form);
       } else if (action === 'process_queue') {
         await this.processMessageQueue();
       } else if (action === 'process_broadcast_campaign') {
@@ -362,14 +368,24 @@ export class AdminController {
     const last = String(person.last_message_text || '').trim();
     const direction = person.last_message_direction === 'out' ? 'Вы: ' : '';
     const href = this.messagesUrl({ personId: person.id, q });
-    return `<a class="message-person ${active ? 'active' : ''}" href="${h(href)}"><strong>${h(name)}</strong><span>${h(username)}</span><em>${last ? h(`${direction}${last}`) : 'Нет личных сообщений'}</em></a>`;
+    const mode = String(person.chat_mode || 'bot') === 'human' ? '<b>человек</b>' : '<b class="muted-mode">бот</b>';
+    return `<a class="message-person ${active ? 'active' : ''}" href="${h(href)}"><strong>${h(name)}${mode}</strong><span>${h(username)}</span><em>${last ? h(`${direction}${last}`) : 'Нет личных сообщений'}</em></a>`;
   }
 
   messagesDialogHeader(person) {
     const name = this.personDisplayName(person);
     const username = person.username ? `@${person.username}` : `Telegram ID ${person.telegram_id}`;
     const details = [person.company, person.position_title, person.phone, person.email].filter(Boolean).join(' · ');
-    return `<header class="messages-dialog-head"><div><h2>${h(name)}</h2><span>${h(username)}</span>${details ? `<p>${h(details)}</p>` : ''}</div><a class="button muted-button" href="/?page=people&q=${encodeURIComponent(person.telegram_id)}">Открыть в людях</a></header>`;
+    const isHuman = String(person.chat_mode || 'bot') === 'human';
+    return `<header class="messages-dialog-head"><div><h2>${h(name)}</h2><span>${h(username)}</span>${details ? `<p>${h(details)}</p>` : ''}</div><div class="messages-dialog-actions"><span class="chat-mode-badge ${isHuman ? 'human' : 'bot'}">${isHuman ? 'Человек отвечает' : 'Бот отвечает'}</span>${this.chatModeForm(person, isHuman)}<a class="button muted-button" href="/?page=people&q=${encodeURIComponent(person.telegram_id)}">Открыть в людях</a></div></header>`;
+  }
+
+  chatModeForm(person, isHuman) {
+    const action = isHuman ? 'end_human_chat' : 'start_human_chat';
+    const label = isHuman ? 'Вернуть боту' : 'Взять диалог';
+    const buttonClass = isHuman ? 'button muted-button' : 'button button-primary';
+    const confirm = isHuman ? 'Вернуть пользователя в обычный режим бота и отправить ему главное меню?' : '';
+    return `<form method="post" class="inline-form" ${confirm ? `data-confirm="${h(confirm)}"` : ''}>${csrfField(this.session)}<input type="hidden" name="action" value="${h(action)}"><input type="hidden" name="_return" value="${h(this.messagesUrl({ personId: person.id }))}"><input type="hidden" name="person_id" value="${Number(person.id)}"><button class="${h(buttonClass)}" type="submit">${h(label)}</button></form>`;
   }
 
   chatMessageBubble(message) {
@@ -377,6 +393,9 @@ export class AdminController {
     const status = String(message.status || '');
     const text = String(message.text || '').trim() || this.messageTypeLabel(message.message_type);
     let body = `<article class="chat-bubble ${h(direction)} ${status === 'failed' ? 'failed' : ''}">`;
+    if (message.media_file_id) {
+      body += `<div class="chat-media-chip">${h(this.messageTypeLabel(message.message_type))}${message.media_name ? ` · ${h(message.media_name)}` : ''}</div>`;
+    }
     body += `<div class="chat-bubble-text">${this.multilineHtml(text)}</div>`;
     body += '<footer>';
     body += `<span>${h(direction === 'out' ? 'Вы' : 'Пользователь')}</span>`;
@@ -389,7 +408,7 @@ export class AdminController {
   }
 
   directMessageForm(person, q) {
-    return `<form method="post" class="direct-message-form">${csrfField(this.session)}<input type="hidden" name="action" value="send_direct_message"><input type="hidden" name="_return" value="${h(this.messagesUrl({ personId: person.id, q }))}"><input type="hidden" name="person_id" value="${Number(person.id)}"><textarea name="text" rows="3" placeholder="Написать личное сообщение" required></textarea><button class="button button-primary" type="submit">Отправить</button></form>`;
+    return `<form method="post" enctype="multipart/form-data" class="direct-message-form">${csrfField(this.session)}<input type="hidden" name="action" value="send_direct_message"><input type="hidden" name="_return" value="${h(this.messagesUrl({ personId: person.id, q }))}"><input type="hidden" name="person_id" value="${Number(person.id)}"><div class="direct-message-fields"><textarea name="text" rows="3" placeholder="Написать личное сообщение"></textarea><label class="direct-photo-field">Картинка<input type="file" name="media_upload" accept="image/*"></label></div><button class="button button-primary" type="submit">Отправить</button></form>`;
   }
 
   messagesUrl({ personId = 0, q = '' } = {}) {
@@ -411,6 +430,7 @@ export class AdminController {
       contact: 'Контакт',
       document: 'Файл',
       voice: 'Голосовое',
+      system: 'Системное',
       message: 'Сообщение',
     }[type] || 'Текст';
   }
@@ -880,8 +900,10 @@ export class AdminController {
   async sendDirectMessage(form) {
     const personId = Number(form.person_id || 0);
     const text = String(form.text || '').trim();
-    if (!text) throw new Error('Введите текст сообщения');
+    const mediaUpload = this.directPhotoUpload(form.media_upload);
+    if (!text && !mediaUpload) throw new Error('Введите текст сообщения или прикрепите картинку');
     if (text.length > 8000) throw new Error('Сообщение слишком длинное');
+    if (mediaUpload && text.length > 900) throw new Error('Подпись к картинке должна быть до 900 символов');
 
     const person = await queryOne('SELECT id, telegram_id, full_name, username FROM people WHERE id = :id LIMIT 1', { id: personId });
     if (!person) throw new Error('Контакт не найден');
@@ -889,11 +911,21 @@ export class AdminController {
     if (!telegramId) throw new Error('У контакта нет Telegram ID');
 
     try {
-      await this.telegram.sendMessage(telegramId, text);
+      let result = null;
+      if (mediaUpload) {
+        result = await this.telegram.sendPhoto(telegramId, mediaUpload, text);
+      } else {
+        result = await this.telegram.sendMessage(telegramId, text);
+      }
+      await this.chat.setHumanMode(person.id);
       await this.chat.recordOutgoing({
         personId: person.id,
         telegramId,
         text,
+        messageType: mediaUpload ? 'photo' : 'text',
+        mediaFileId: mediaUpload ? extractTelegramPhotoFileId(result) : null,
+        mediaName: mediaUpload?.filename || null,
+        mediaMime: mediaUpload?.mimeType || null,
         status: 'sent',
       });
       this.flash('Сообщение отправлено');
@@ -902,11 +934,79 @@ export class AdminController {
         personId: person.id,
         telegramId,
         text,
+        messageType: mediaUpload ? 'photo' : 'text',
+        mediaName: mediaUpload?.filename || null,
+        mediaMime: mediaUpload?.mimeType || null,
         status: 'failed',
         error: error.message,
       });
       throw error;
     }
+  }
+
+  directPhotoUpload(upload) {
+    if (!upload || !upload.buffer || Number(upload.size || 0) <= 0) {
+      return null;
+    }
+
+    const size = Number(upload.size || upload.buffer.length || 0);
+    if (size > DIRECT_PHOTO_UPLOAD_LIMIT) {
+      throw new Error('Картинка слишком большая: максимум 10 МБ');
+    }
+
+    const mimeType = String(upload.mimeType || 'application/octet-stream').toLowerCase();
+    if (!mimeType.startsWith('image/')) {
+      throw new Error('Можно прикрепить только картинку');
+    }
+
+    const filename = String(upload.filename || 'direct-photo.jpg').trim().slice(0, 180) || 'direct-photo.jpg';
+    return {
+      buffer: Buffer.isBuffer(upload.buffer) ? upload.buffer : Buffer.from(upload.buffer),
+      mimeType,
+      filename,
+      size,
+    };
+  }
+
+  async startHumanChat(form) {
+    const person = await this.chatPerson(Number(form.person_id || 0));
+    await this.chat.setHumanMode(person.id);
+    this.flash('Диалог переведен на человека');
+  }
+
+  async endHumanChat(form) {
+    const person = await this.chatPerson(Number(form.person_id || 0));
+    const telegramId = Number(person.telegram_id || 0);
+    const text = '<b>Мы вернули вас в обычный режим бота.</b>\n\nВыберите действие на клавиатуре ниже 🙂';
+    await this.chat.setBotMode(person.id);
+    try {
+      await this.telegram.sendMessage(telegramId, text, botMainMenuKeyboard());
+      await this.chat.recordOutgoing({
+        personId: person.id,
+        telegramId,
+        text,
+        messageType: 'system',
+        status: 'sent',
+      });
+      this.flash('Диалог возвращен боту');
+    } catch (error) {
+      await this.chat.recordOutgoing({
+        personId: person.id,
+        telegramId,
+        text,
+        messageType: 'system',
+        status: 'failed',
+        error: error.message,
+      });
+      throw error;
+    }
+  }
+
+  async chatPerson(personId) {
+    const person = await queryOne('SELECT id, telegram_id, full_name, username FROM people WHERE id = :id LIMIT 1', { id: personId });
+    if (!person) throw new Error('Контакт не найден');
+    if (!Number(person.telegram_id || 0)) throw new Error('У контакта нет Telegram ID');
+    return person;
   }
 
   async sendSimulatorMessage(text) {
@@ -2318,6 +2418,11 @@ function defaultBroadcastFilename(contentType) {
   if (contentType === 'photo') return 'broadcast-image.jpg';
   if (contentType === 'video_note') return 'broadcast-video-note.mp4';
   return 'broadcast-video.mp4';
+}
+
+function extractTelegramPhotoFileId(response) {
+  const photos = response?.result?.photo || [];
+  return String(photos[photos.length - 1]?.file_id || '').trim() || null;
 }
 
 function redirect(location) {

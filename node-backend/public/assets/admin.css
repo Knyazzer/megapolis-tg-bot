@@ -1099,6 +1099,29 @@ textarea {
   white-space: nowrap;
 }
 
+.message-person strong {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.message-person b {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: var(--brand-dark);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.message-person b.muted-mode {
+  background: #eef2f6;
+  color: var(--muted);
+}
+
 .message-person span,
 .message-person em {
   color: var(--muted);
@@ -1133,6 +1156,36 @@ textarea {
   margin: 0;
   color: var(--muted);
   font-size: 12px;
+}
+
+.messages-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.messages-dialog-actions form {
+  margin: 0;
+}
+
+.chat-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: #eef2f6;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.chat-mode-badge.human {
+  background: #dbeafe;
+  color: var(--brand-dark);
 }
 
 .messages-feed {
@@ -1180,6 +1233,19 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.chat-media-chip {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(30, 107, 255, 0.09);
+  color: var(--brand-dark);
+  font-size: 12px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 .chat-bubble footer {
   display: flex;
   flex-wrap: wrap;
@@ -1209,9 +1275,29 @@ textarea {
   background: #fff;
 }
 
+.direct-message-fields {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
 .direct-message-form textarea {
   min-height: 70px;
   resize: vertical;
+}
+
+.direct-photo-field {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.direct-photo-field input {
+  min-height: 38px;
+  padding: 7px;
+  border: 1px dashed #c8d4e3;
+  background: #f8fafc;
 }
 
 .login-body {
