@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 import { BotController } from '../bot/bot-controller.js';
-import { mainMenuKeyboard as botMainMenuKeyboard } from '../bot/keyboards.js';
+import { mainMenuKeyboard as botMainMenuKeyboard, removeKeyboard } from '../bot/keyboards.js';
 import { execute, isSqlite, query, queryOne, withTransaction } from '../db/mysql.js';
 import { processDueMessages } from '../jobs/message-worker.js';
 import {
@@ -30,6 +30,7 @@ const BROADCAST_UPLOAD_LIMITS = {
   video_note: 50 * 1024 * 1024,
 };
 const DIRECT_PHOTO_UPLOAD_LIMIT = 10 * 1024 * 1024;
+const DIRECT_IMAGE_UPLOAD_LIMIT = 50 * 1024 * 1024;
 
 export class AdminController {
   constructor({ session, response }) {
@@ -64,6 +65,10 @@ export class AdminController {
 
     if (action === 'broadcast_recipients') {
       return this.broadcastRecipientsJson(url);
+    }
+
+    if (action === 'messages_feed') {
+      return this.messagesFeedJson(url);
     }
 
     const page = String(url.searchParams.get('page') || 'registrations');
@@ -304,7 +309,7 @@ export class AdminController {
     }
 
     body += this.messagesDialogHeader(selectedPerson);
-    body += '<div class="messages-feed" data-messages-feed>';
+    body += `<div class="messages-feed" data-messages-feed data-person-id="${Number(selectedPerson.id)}" data-last-message-id="${this.lastMessageId(messages)}">`;
     if (messages.length === 0) {
       body += '<p class="messages-empty-note">Личной переписки пока нет. Можно написать первое сообщение.</p>';
     } else {
@@ -361,6 +366,48 @@ export class AdminController {
     );
   }
 
+  async chatMessagesAfter(personId, afterId) {
+    return query(
+      `SELECT *
+       FROM chat_messages
+       WHERE person_id = :personId AND id > :afterId
+       ORDER BY id ASC
+       LIMIT 100`,
+      {
+        personId: Number(personId),
+        afterId: Number(afterId || 0),
+      },
+    );
+  }
+
+  async messagesFeedJson(url) {
+    const personId = Number(url.searchParams.get('person_id') || 0);
+    const afterId = Number(url.searchParams.get('after') || 0);
+    if (personId <= 0) {
+      return json({ ok: false, error: 'person_id is required' }, 400);
+    }
+
+    const person = await queryOne('SELECT id FROM people WHERE id = :id LIMIT 1', { id: personId });
+    if (!person) {
+      return json({ ok: false, error: 'Person not found' }, 404);
+    }
+
+    const messages = await this.chatMessagesAfter(personId, afterId);
+    return json({
+      ok: true,
+      personId,
+      lastMessageId: this.lastMessageId(messages, afterId),
+      messages: messages.map((message) => ({
+        id: Number(message.id),
+        html: this.chatMessageBubble(message),
+      })),
+    });
+  }
+
+  lastMessageId(messages, fallback = 0) {
+    return messages.reduce((max, message) => Math.max(max, Number(message.id || 0)), Number(fallback || 0));
+  }
+
   messagePersonLink(person, selectedPersonId, q) {
     const active = Number(person.id) === Number(selectedPersonId);
     const name = this.personDisplayName(person);
@@ -408,7 +455,7 @@ export class AdminController {
   }
 
   directMessageForm(person, q) {
-    return `<form method="post" enctype="multipart/form-data" class="direct-message-form">${csrfField(this.session)}<input type="hidden" name="action" value="send_direct_message"><input type="hidden" name="_return" value="${h(this.messagesUrl({ personId: person.id, q }))}"><input type="hidden" name="person_id" value="${Number(person.id)}"><div class="direct-message-fields"><textarea name="text" rows="3" placeholder="Написать личное сообщение"></textarea><label class="direct-photo-field">Картинка<input type="file" name="media_upload" accept="image/*"></label></div><button class="button button-primary" type="submit">Отправить</button></form>`;
+    return `<form method="post" enctype="multipart/form-data" class="direct-message-form">${csrfField(this.session)}<input type="hidden" name="action" value="send_direct_message"><input type="hidden" name="_return" value="${h(this.messagesUrl({ personId: person.id, q }))}"><input type="hidden" name="person_id" value="${Number(person.id)}"><div class="direct-message-fields"><textarea name="text" rows="3" placeholder="Написать личное сообщение"></textarea><label class="direct-photo-field">Картинка<span class="field-caption">до 50 МБ</span><input type="file" name="media_upload" accept="image/*" data-max-file-size="${DIRECT_IMAGE_UPLOAD_LIMIT}"></label></div><button class="button button-primary" type="submit">Отправить</button></form>`;
   }
 
   messagesUrl({ personId = 0, q = '' } = {}) {
@@ -427,6 +474,7 @@ export class AdminController {
       video_note: 'Кружок',
       video: 'Видео',
       photo: 'Картинка',
+      image_document: 'Картинка файлом',
       contact: 'Контакт',
       document: 'Файл',
       voice: 'Голосовое',
@@ -913,17 +961,20 @@ export class AdminController {
     try {
       let result = null;
       if (mediaUpload) {
-        result = await this.telegram.sendPhoto(telegramId, mediaUpload, text);
+        result = mediaUpload.deliveryMethod === 'document'
+          ? await this.telegram.sendDocument(telegramId, mediaUpload, text)
+          : await this.telegram.sendPhoto(telegramId, mediaUpload, text);
       } else {
         result = await this.telegram.sendMessage(telegramId, text);
       }
+      const mediaType = mediaUpload?.deliveryMethod === 'document' ? 'image_document' : 'photo';
       await this.chat.setHumanMode(person.id);
       await this.chat.recordOutgoing({
         personId: person.id,
         telegramId,
         text,
-        messageType: mediaUpload ? 'photo' : 'text',
-        mediaFileId: mediaUpload ? extractTelegramPhotoFileId(result) : null,
+        messageType: mediaUpload ? mediaType : 'text',
+        mediaFileId: mediaUpload ? extractTelegramMediaFileId(result, mediaType) : null,
         mediaName: mediaUpload?.filename || null,
         mediaMime: mediaUpload?.mimeType || null,
         status: 'sent',
@@ -934,7 +985,7 @@ export class AdminController {
         personId: person.id,
         telegramId,
         text,
-        messageType: mediaUpload ? 'photo' : 'text',
+        messageType: mediaUpload?.deliveryMethod === 'document' ? 'image_document' : (mediaUpload ? 'photo' : 'text'),
         mediaName: mediaUpload?.filename || null,
         mediaMime: mediaUpload?.mimeType || null,
         status: 'failed',
@@ -950,8 +1001,8 @@ export class AdminController {
     }
 
     const size = Number(upload.size || upload.buffer.length || 0);
-    if (size > DIRECT_PHOTO_UPLOAD_LIMIT) {
-      throw new Error('Картинка слишком большая: максимум 10 МБ');
+    if (size > DIRECT_IMAGE_UPLOAD_LIMIT) {
+      throw new Error('Картинка слишком большая: максимум 50 МБ');
     }
 
     const mimeType = String(upload.mimeType || 'application/octet-stream').toLowerCase();
@@ -965,13 +1016,36 @@ export class AdminController {
       mimeType,
       filename,
       size,
+      deliveryMethod: size > DIRECT_PHOTO_UPLOAD_LIMIT ? 'document' : 'photo',
     };
   }
 
   async startHumanChat(form) {
     const person = await this.chatPerson(Number(form.person_id || 0));
+    const telegramId = Number(person.telegram_id || 0);
+    const text = '<b>К диалогу подключился менеджер.</b>\n\nТеперь можно написать сюда обычным сообщением, мы ответим лично 🙂';
     await this.chat.setHumanMode(person.id);
-    this.flash('Диалог переведен на человека');
+    try {
+      await this.telegram.sendMessage(telegramId, text, removeKeyboard());
+      await this.chat.recordOutgoing({
+        personId: person.id,
+        telegramId,
+        text,
+        messageType: 'system',
+        status: 'sent',
+      });
+      this.flash('Диалог переведен на человека');
+    } catch (error) {
+      await this.chat.recordOutgoing({
+        personId: person.id,
+        telegramId,
+        text,
+        messageType: 'system',
+        status: 'failed',
+        error: error.message,
+      });
+      throw error;
+    }
   }
 
   async endHumanChat(form) {
@@ -2420,7 +2494,11 @@ function defaultBroadcastFilename(contentType) {
   return 'broadcast-video.mp4';
 }
 
-function extractTelegramPhotoFileId(response) {
+function extractTelegramMediaFileId(response, mediaType) {
+  if (mediaType === 'image_document') {
+    return String(response?.result?.document?.file_id || '').trim() || null;
+  }
+
   const photos = response?.result?.photo || [];
   return String(photos[photos.length - 1]?.file_id || '').trim() || null;
 }

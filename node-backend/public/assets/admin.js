@@ -504,15 +504,80 @@
     messagesFeed.scrollTop = messagesFeed.scrollHeight;
   }
 
+  function isNearMessagesBottom(feed) {
+    return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 120;
+  }
+
+  function pollMessagesFeed(feed) {
+    var personId = feed.dataset.personId;
+    var lastMessageId = Number(feed.dataset.lastMessageId || 0);
+    if (!personId || document.hidden) {
+      return;
+    }
+
+    var url = '/?action=messages_feed&person_id=' + encodeURIComponent(personId) + '&after=' + encodeURIComponent(lastMessageId);
+    fetch(url, { credentials: 'same-origin' }).then(function (response) {
+      if (!response.ok) {
+        throw new Error('messages feed request failed');
+      }
+      return response.json();
+    }).then(function (payload) {
+      if (!payload || !payload.ok || !Array.isArray(payload.messages) || payload.messages.length === 0) {
+        return;
+      }
+
+      var shouldScroll = isNearMessagesBottom(feed);
+      var emptyNote = feed.querySelector('.messages-empty-note');
+      if (emptyNote) {
+        emptyNote.remove();
+      }
+
+      payload.messages.forEach(function (message) {
+        var node = htmlElement(message.html);
+        if (node) {
+          feed.appendChild(node);
+        }
+      });
+
+      feed.dataset.lastMessageId = String(payload.lastMessageId || payload.messages[payload.messages.length - 1].id || lastMessageId);
+      if (shouldScroll) {
+        feed.scrollTop = feed.scrollHeight;
+      }
+    }).catch(function () {
+      // The next interval will retry; keep the chat usable if one poll fails.
+    });
+  }
+
+  if (messagesFeed && messagesFeed.dataset.personId) {
+    window.setInterval(function () {
+      pollMessagesFeed(messagesFeed);
+    }, 3500);
+  }
+
+  function formatFileSize(bytes) {
+    var size = Number(bytes || 0);
+    if (size >= 1024 * 1024) {
+      return Math.round(size / 1024 / 1024) + ' МБ';
+    }
+    return Math.max(1, Math.round(size / 1024)) + ' КБ';
+  }
+
   document.querySelectorAll('.direct-message-form').forEach(function (form) {
     form.addEventListener('submit', function (event) {
       var text = form.querySelector('textarea[name="text"]');
       var file = form.querySelector('input[type="file"]');
       var hasText = Boolean(text && String(text.value || '').trim());
       var hasFile = Boolean(file && file.files && file.files.length > 0);
+      var selectedFile = hasFile ? file.files[0] : null;
+      var maxFileSize = file ? Number(file.dataset.maxFileSize || 0) : 0;
       if (!hasText && !hasFile) {
         event.preventDefault();
         window.alert('Напишите сообщение или прикрепите картинку.');
+        return;
+      }
+      if (selectedFile && maxFileSize > 0 && selectedFile.size > maxFileSize) {
+        event.preventDefault();
+        window.alert('Файл слишком большой: максимум ' + formatFileSize(maxFileSize) + '.');
         return;
       }
       if (hasFile && text && String(text.value || '').trim().length > 900) {

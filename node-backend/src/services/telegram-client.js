@@ -101,6 +101,29 @@ export class TelegramClient {
     return this.api('sendVideo', payload);
   }
 
+  async sendDocument(chatId, document, caption = '', replyMarkup = {}, extra = {}) {
+    const payload = {
+      chat_id: chatId,
+      parse_mode: 'HTML',
+      ...extra,
+    };
+
+    if (caption) {
+      payload.caption = caption;
+    }
+
+    if (Object.keys(replyMarkup).length > 0) {
+      payload.reply_markup = replyMarkup;
+    }
+
+    if (isUploadFile(document)) {
+      return this.apiMultipart('sendDocument', payload, 'document', document);
+    }
+
+    payload.document = document;
+    return this.api('sendDocument', payload);
+  }
+
   async sendVideoNote(chatId, videoNote, replyMarkup = {}, extra = {}) {
     const payload = {
       chat_id: chatId,
