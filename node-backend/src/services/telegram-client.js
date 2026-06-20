@@ -58,7 +58,6 @@ export class TelegramClient {
   async sendPhoto(chatId, photo, caption = '', replyMarkup = {}, extra = {}) {
     const payload = {
       chat_id: chatId,
-      photo,
       parse_mode: 'HTML',
       ...extra,
     };
@@ -71,13 +70,17 @@ export class TelegramClient {
       payload.reply_markup = replyMarkup;
     }
 
+    if (isUploadFile(photo)) {
+      return this.apiMultipart('sendPhoto', payload, 'photo', photo);
+    }
+
+    payload.photo = photo;
     return this.api('sendPhoto', payload);
   }
 
   async sendVideo(chatId, video, caption = '', replyMarkup = {}, extra = {}) {
     const payload = {
       chat_id: chatId,
-      video,
       parse_mode: 'HTML',
       ...extra,
     };
@@ -90,13 +93,17 @@ export class TelegramClient {
       payload.reply_markup = replyMarkup;
     }
 
+    if (isUploadFile(video)) {
+      return this.apiMultipart('sendVideo', payload, 'video', video);
+    }
+
+    payload.video = video;
     return this.api('sendVideo', payload);
   }
 
   async sendVideoNote(chatId, videoNote, replyMarkup = {}, extra = {}) {
     const payload = {
       chat_id: chatId,
-      video_note: videoNote,
       ...extra,
     };
 
@@ -104,6 +111,11 @@ export class TelegramClient {
       payload.reply_markup = replyMarkup;
     }
 
+    if (isUploadFile(videoNote)) {
+      return this.apiMultipart('sendVideoNote', payload, 'video_note', videoNote);
+    }
+
+    payload.video_note = videoNote;
     return this.api('sendVideoNote', payload);
   }
 
@@ -127,6 +139,52 @@ export class TelegramClient {
       const response = await fetch(`https://api.telegram.org/bot${config.telegram.token}/${method}`, {
         method: 'POST',
         body: new URLSearchParams(serializeTelegramPayload(payload)),
+        signal: controller.signal,
+      });
+      const decoded = await response.json();
+      if (!decoded.ok) {
+        throw new Error(`Telegram API error: ${JSON.stringify(decoded)}`);
+      }
+      return decoded;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async apiMultipart(method, payload, fileField, file) {
+    if (config.telegram.dryRun) {
+      logger.info(`telegram dry run multipart: ${method}`, {
+        ...payload,
+        [fileField]: {
+          filename: file.filename || 'media.bin',
+          mimeType: file.mimeType || 'application/octet-stream',
+          size: file.size || file.buffer?.length || 0,
+        },
+      });
+      return { ok: true, result: { dry_run: true } };
+    }
+
+    if (!config.telegram.token) {
+      throw new Error('TELEGRAM_BOT_TOKEN is empty');
+    }
+
+    const buffer = Buffer.isBuffer(file.buffer) ? file.buffer : Buffer.from(file.buffer || []);
+    const formData = new FormData();
+    for (const [key, value] of Object.entries(serializeTelegramPayload(payload))) {
+      formData.append(key, value);
+    }
+    formData.append(
+      fileField,
+      new Blob([buffer], { type: file.mimeType || 'application/octet-stream' }),
+      file.filename || 'media.bin',
+    );
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+      const response = await fetch(`https://api.telegram.org/bot${config.telegram.token}/${method}`, {
+        method: 'POST',
+        body: formData,
         signal: controller.signal,
       });
       const decoded = await response.json();
@@ -171,6 +229,10 @@ export class TelegramClient {
 
     return true;
   }
+}
+
+function isUploadFile(value) {
+  return Boolean(value && typeof value === 'object' && value.buffer);
 }
 
 function serializeTelegramPayload(payload) {

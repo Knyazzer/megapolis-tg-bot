@@ -7,6 +7,7 @@ import {
   eventSupportsOffline,
   eventSupportsOnline,
 } from '../repositories/events-repository.js';
+import { ChatRepository } from '../repositories/chat-repository.js';
 import { ReminderPlanner } from '../services/reminder-planner.js';
 import { TelegramClient } from '../services/telegram-client.js';
 import { dateShort, formatSqlDate, nowSql, parseDate, timeOnly, timeRange } from '../utils/dates.js';
@@ -22,6 +23,11 @@ const FLOW_CONNECTOR_GAP = 24;
 const FLOW_BOARD_WIDTH = 3720;
 const FLOW_BOARD_HEIGHT = 1460;
 const FLOW_EDGE_LABEL_OFFSET = 26;
+const BROADCAST_UPLOAD_LIMITS = {
+  photo: 10 * 1024 * 1024,
+  video: 50 * 1024 * 1024,
+  video_note: 50 * 1024 * 1024,
+};
 
 export class AdminController {
   constructor({ session, response }) {
@@ -29,6 +35,7 @@ export class AdminController {
     this.response = response;
     this.telegram = this.adminTelegramClient();
     this.planner = new ReminderPlanner();
+    this.chat = new ChatRepository();
   }
 
   async handle({ method, url, form }) {
@@ -91,8 +98,18 @@ export class AdminController {
         await this.undoVisited(form);
       } else if (action === 'create_broadcast') {
         await this.createBroadcast(form);
+      } else if (action === 'send_direct_message') {
+        await this.sendDirectMessage(form);
       } else if (action === 'process_queue') {
         await this.processMessageQueue();
+      } else if (action === 'process_broadcast_campaign') {
+        await this.processBroadcastCampaign(form);
+      } else if (action === 'retry_broadcast_campaign') {
+        await this.retryBroadcastCampaign(form);
+      } else if (action === 'cancel_broadcast_campaign') {
+        await this.cancelBroadcastCampaign(form);
+      } else if (action === 'delete_broadcast_campaign') {
+        await this.deleteBroadcastCampaign(form);
       } else if (action === 'reset_person_history') {
         await this.resetPersonHistory(form);
       } else if (action === 'seed_demo') {
@@ -155,6 +172,7 @@ export class AdminController {
     if (page === 'events') return this.eventsPage();
     if (page === 'event_edit') return this.eventEditPage(Number(url.searchParams.get('id') || 0));
     if (page === 'people') return this.peoplePage(url);
+    if (page === 'messages') return this.messagesPage(url);
     if (page === 'reception') return this.receptionPage(url);
     if (page === 'broadcasts') return this.broadcastsPage(url);
     if (page === 'flow') return this.flowPage();
@@ -247,6 +265,158 @@ export class AdminController {
       body += this.peopleTableRow(person, histories.get(Number(person.id)) || []);
     }
     return `${body}</tbody></table></div></section>`;
+  }
+
+  async messagesPage(url) {
+    const q = String(url.searchParams.get('q') || '').trim().slice(0, 80);
+    const people = await this.messagePeople(q);
+    const requestedPersonId = Number(url.searchParams.get('person_id') || 0);
+    const selectedPersonId = requestedPersonId > 0 ? requestedPersonId : Number(people[0]?.id || 0);
+    const selectedPerson = selectedPersonId > 0
+      ? await queryOne('SELECT * FROM people WHERE id = :id LIMIT 1', { id: selectedPersonId })
+      : null;
+    const messages = selectedPerson ? await this.chatMessages(selectedPerson.id) : [];
+
+    let body = '<section class="panel messages-workspace">';
+    body += '<aside class="messages-sidebar">';
+    body += '<div class="messages-sidebar-head"><h2>Общение</h2><span class="muted">Личные сообщения через бота</span></div>';
+    body += `<form class="messages-search" method="get"><input type="hidden" name="page" value="messages"><input name="q" value="${h(q)}" placeholder="Найти человека"><button class="button" type="submit">Найти</button></form>`;
+    body += '<div class="messages-people-list">';
+    if (people.length === 0) {
+      body += '<p class="empty">Людей не нашли.</p>';
+    } else {
+      for (const person of people) {
+        body += this.messagePersonLink(person, selectedPersonId, q);
+      }
+    }
+    body += '</div></aside>';
+
+    body += '<div class="messages-dialog">';
+    if (!selectedPerson) {
+      body += '<div class="messages-empty"><h2>Выберите человека</h2><p class="muted">После выбора здесь появится история и поле для личного сообщения.</p></div>';
+      return `${body}</div></section>`;
+    }
+
+    body += this.messagesDialogHeader(selectedPerson);
+    body += '<div class="messages-feed" data-messages-feed>';
+    if (messages.length === 0) {
+      body += '<p class="messages-empty-note">Личной переписки пока нет. Можно написать первое сообщение.</p>';
+    } else {
+      for (const message of messages) {
+        body += this.chatMessageBubble(message);
+      }
+    }
+    body += '</div>';
+    body += this.directMessageForm(selectedPerson, q);
+    return `${body}</div></section>`;
+  }
+
+  async messagePeople(q) {
+    const params = {};
+    const where = [];
+    if (q) {
+      params.search = `%${q}%`;
+      where.push(`(
+        p.full_name LIKE :search OR
+        p.username LIKE :search OR
+        p.company LIKE :search OR
+        p.position_title LIKE :search OR
+        p.phone LIKE :search OR
+        p.email LIKE :search OR
+        p.telegram_id LIKE :search
+      )`);
+    }
+    const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    return query(
+      `SELECT p.*,
+        (SELECT MAX(cm.created_at) FROM chat_messages cm WHERE cm.person_id = p.id) AS last_message_at,
+        (SELECT cm.text FROM chat_messages cm WHERE cm.person_id = p.id ORDER BY cm.created_at DESC, cm.id DESC LIMIT 1) AS last_message_text,
+        (SELECT cm.direction FROM chat_messages cm WHERE cm.person_id = p.id ORDER BY cm.created_at DESC, cm.id DESC LIMIT 1) AS last_message_direction
+       FROM people p
+       ${whereSql}
+       ORDER BY COALESCE(last_message_at, p.last_seen_at, p.created_at) DESC, p.id DESC
+       LIMIT 200`,
+      params,
+    );
+  }
+
+  async chatMessages(personId) {
+    return query(
+      `SELECT *
+       FROM (
+         SELECT *
+         FROM chat_messages
+         WHERE person_id = :personId
+         ORDER BY created_at DESC, id DESC
+         LIMIT 300
+       ) recent
+       ORDER BY created_at ASC, id ASC`,
+      { personId: Number(personId) },
+    );
+  }
+
+  messagePersonLink(person, selectedPersonId, q) {
+    const active = Number(person.id) === Number(selectedPersonId);
+    const name = this.personDisplayName(person);
+    const username = person.username ? `@${person.username}` : `ID ${person.telegram_id}`;
+    const last = String(person.last_message_text || '').trim();
+    const direction = person.last_message_direction === 'out' ? 'Вы: ' : '';
+    const href = this.messagesUrl({ personId: person.id, q });
+    return `<a class="message-person ${active ? 'active' : ''}" href="${h(href)}"><strong>${h(name)}</strong><span>${h(username)}</span><em>${last ? h(`${direction}${last}`) : 'Нет личных сообщений'}</em></a>`;
+  }
+
+  messagesDialogHeader(person) {
+    const name = this.personDisplayName(person);
+    const username = person.username ? `@${person.username}` : `Telegram ID ${person.telegram_id}`;
+    const details = [person.company, person.position_title, person.phone, person.email].filter(Boolean).join(' · ');
+    return `<header class="messages-dialog-head"><div><h2>${h(name)}</h2><span>${h(username)}</span>${details ? `<p>${h(details)}</p>` : ''}</div><a class="button muted-button" href="/?page=people&q=${encodeURIComponent(person.telegram_id)}">Открыть в людях</a></header>`;
+  }
+
+  chatMessageBubble(message) {
+    const direction = message.direction === 'out' ? 'out' : 'in';
+    const status = String(message.status || '');
+    const text = String(message.text || '').trim() || this.messageTypeLabel(message.message_type);
+    let body = `<article class="chat-bubble ${h(direction)} ${status === 'failed' ? 'failed' : ''}">`;
+    body += `<div class="chat-bubble-text">${this.multilineHtml(text)}</div>`;
+    body += '<footer>';
+    body += `<span>${h(direction === 'out' ? 'Вы' : 'Пользователь')}</span>`;
+    if (message.message_type && message.message_type !== 'text') body += `<span>${h(this.messageTypeLabel(message.message_type))}</span>`;
+    if (status === 'failed') body += '<span class="danger-text">ошибка</span>';
+    body += `<time>${h(this.dateTime(message.created_at))}</time>`;
+    body += '</footer>';
+    if (message.error) body += `<div class="chat-error">${h(message.error)}</div>`;
+    return `${body}</article>`;
+  }
+
+  directMessageForm(person, q) {
+    return `<form method="post" class="direct-message-form">${csrfField(this.session)}<input type="hidden" name="action" value="send_direct_message"><input type="hidden" name="_return" value="${h(this.messagesUrl({ personId: person.id, q }))}"><input type="hidden" name="person_id" value="${Number(person.id)}"><textarea name="text" rows="3" placeholder="Написать личное сообщение" required></textarea><button class="button button-primary" type="submit">Отправить</button></form>`;
+  }
+
+  messagesUrl({ personId = 0, q = '' } = {}) {
+    const params = new URLSearchParams({ page: 'messages' });
+    if (personId) params.set('person_id', String(Number(personId)));
+    if (q) params.set('q', q);
+    return `/?${params.toString()}`;
+  }
+
+  personDisplayName(person) {
+    return String(person.full_name || person.first_name || person.username || `ID ${person.telegram_id}`).trim();
+  }
+
+  messageTypeLabel(type) {
+    return {
+      video_note: 'Кружок',
+      video: 'Видео',
+      photo: 'Картинка',
+      contact: 'Контакт',
+      document: 'Файл',
+      voice: 'Голосовое',
+      message: 'Сообщение',
+    }[type] || 'Текст';
+  }
+
+  multilineHtml(text) {
+    return h(text).replaceAll('\n', '<br>');
   }
 
   peopleFilters(url) {
@@ -574,8 +744,8 @@ export class AdminController {
 
     if (tab === 'history') {
       body += '<div class="broadcast-history"><div class="panel-head"><h2>История рассылок</h2><form method="post" class="inline-form">';
-      body += `${csrfField(this.session)}<input type="hidden" name="action" value="process_queue"><input type="hidden" name="_return" value="/?page=broadcasts&tab=history"><button class="button muted-button" type="submit">Обработать очередь сейчас</button></form></div>`;
-      body += '<table><thead><tr><th>Рассылка</th><th>Аудитория</th><th>Доставка</th><th>Статус</th><th>Создана</th></tr></thead><tbody>';
+      body += `${csrfField(this.session)}<input type="hidden" name="action" value="process_queue"><input type="hidden" name="_return" value="/?page=broadcasts&tab=history"><button class="button muted-button" type="submit">Отправить всю очередь</button></form></div>`;
+      body += '<table><thead><tr><th>Рассылка</th><th>Аудитория</th><th>Доставка</th><th>Статус</th><th>Создана</th><th>Действия</th></tr></thead><tbody>';
       const audiences = this.audiences();
       for (const campaign of campaigns) {
         body += '<tr>';
@@ -584,15 +754,16 @@ export class AdminController {
         body += `<td>${this.broadcastDeliveryStats(campaign)}</td>`;
         body += `<td>${this.broadcastStatusLabel(campaign)}</td>`;
         body += `<td>${h(this.dateTime(campaign.created_at))}</td>`;
+        body += `<td>${this.broadcastCampaignActions(campaign)}</td>`;
         body += '</tr>';
       }
       if (campaigns.length === 0) {
-        body += '<tr><td colspan="5"><p class="empty">Рассылок пока нет.</p></td></tr>';
+        body += '<tr><td colspan="6"><p class="empty">Рассылок пока нет.</p></td></tr>';
       }
       return `${body}</tbody></table></div></section>`;
     }
 
-    body += '<div class="broadcast-compose"><div class="panel-head"><h2>Новая рассылка</h2><span class="muted">Выберите аудиторию и проверьте получателей</span></div><form method="post" class="form-grid broadcast-form" data-broadcast-form>';
+    body += '<div class="broadcast-compose"><div class="panel-head"><h2>Новая рассылка</h2><span class="muted">Выберите аудиторию и проверьте получателей</span></div><form method="post" enctype="multipart/form-data" class="form-grid broadcast-form" data-broadcast-form>';
     body += `${csrfField(this.session)}<input type="hidden" name="action" value="create_broadcast"><input type="hidden" name="_return" value="/?page=broadcasts&tab=history">`;
     body += '<div class="broadcast-fields">';
     body += this.input('Название рассылки', 'title', '', true);
@@ -604,12 +775,13 @@ export class AdminController {
     for (const event of events) body += `<option value="${Number(event.id)}">${h(`${event.title} - ${dateShort(event.date_start)}`)}</option>`;
     body += '</select></label><label>Тип<select name="content_type"><option value="text">Текст</option><option value="photo">Картинка</option><option value="video">Видео</option><option value="video_note">Кружок / видео-сообщение</option></select></label>';
     body += this.textarea('Текст сообщения', 'body', '');
-    body += '<label class="broadcast-media-field">Медиа<span class="field-caption">HTTPS-ссылка на медиа или Telegram file_id</span><input type="text" name="media_file_id" value="" data-broadcast-media-input placeholder="Для текста оставьте пустым"></label>';
+    body += '<label class="broadcast-upload-field">Файл<span class="field-caption">Выберите картинку или видео с компьютера</span><input type="file" name="media_upload" data-broadcast-file-input accept="image/*,video/mp4,video/quicktime,video/webm"></label>';
+    body += '<label class="broadcast-media-field">Ссылка или Telegram file_id<span class="field-caption">Необязательно, если файл загружен выше</span><input type="text" name="media_file_id" value="" data-broadcast-media-input placeholder="Для текста оставьте пустым"></label>';
     body += '<div class="broadcast-media-help" data-broadcast-media-help>';
-    body += '<div class="media-guide is-active" data-media-guide="text"><strong>Текстовая рассылка</strong><span>Заполните только текст сообщения. Поле медиа можно оставить пустым.</span></div>';
-    body += '<div class="media-guide" data-media-guide="photo"><strong>Картинка</strong><ol><li>Выберите тип «Картинка».</li><li>В поле «Медиа» вставьте HTTPS-ссылку на изображение или Telegram file_id.</li><li>Чтобы получить file_id, отправьте картинку боту с аккаунта модератора.</li><li>Текст можно оставить пустым. Если заполнить, он уйдёт подписью под картинкой.</li></ol></div>';
-    body += '<div class="media-guide" data-media-guide="video"><strong>Видео</strong><ol><li>Выберите тип «Видео».</li><li>В поле «Медиа» вставьте HTTPS-ссылку на mp4-файл или Telegram file_id.</li><li>Чтобы получить file_id, отправьте видео боту с аккаунта модератора.</li><li>Текст можно оставить пустым. Если заполнить, он уйдёт подписью под видео.</li></ol></div>';
-    body += '<div class="media-guide" data-media-guide="video_note"><strong>Кружок в Telegram</strong><ol><li>Отправьте кружок вашему боту с аккаунта модератора.</li><li>Бот вернёт Telegram file_id — вставьте его в поле «Медиа».</li><li>Кружок уйдёт отдельным сообщением, текст отправится следом.</li></ol></div>';
+    body += '<div class="media-guide is-active" data-media-guide="text"><strong>Текстовая рассылка</strong><span>Заполните только текст сообщения. Файл и ссылку можно оставить пустыми.</span></div>';
+    body += '<div class="media-guide" data-media-guide="photo"><strong>Картинка</strong><ol><li>Выберите файл JPG, PNG, GIF или WebP до 10 МБ.</li><li>Текст можно оставить пустым. Если заполнить, он уйдёт подписью под картинкой.</li><li>Если файл уже есть в Telegram, можно вместо загрузки вставить ссылку или file_id.</li></ol></div>';
+    body += '<div class="media-guide" data-media-guide="video"><strong>Видео</strong><ol><li>Выберите MP4, MOV или WebM до 50 МБ.</li><li>Текст можно оставить пустым. Если заполнить, он уйдёт подписью под видео.</li><li>Если видео уже загружалось, можно вместо файла вставить ссылку или file_id.</li></ol></div>';
+    body += '<div class="media-guide" data-media-guide="video_note"><strong>Кружок в Telegram</strong><ol><li>Можно загрузить короткое квадратное видео до 50 МБ.</li><li>Telegram принимает кружки только в подходящем формате; самый надёжный путь — отправить настоящий кружок боту и вставить его file_id.</li><li>Текст отправится отдельным сообщением после кружка.</li></ol></div>';
     body += '</div></div>';
     body += '<aside class="broadcast-preview" data-broadcast-preview><div class="broadcast-preview-head"><strong>Получатели</strong><span class="muted" data-broadcast-preview-count>Загрузка...</span></div><div class="broadcast-preview-list" data-broadcast-preview-list></div></aside>';
     body += '<div class="actions broadcast-actions"><button class="button button-primary" type="submit">Поставить в очередь</button><a class="button muted-button" href="/?page=broadcasts&tab=history">Открыть историю</a></div></form></div></section>';
@@ -703,6 +875,38 @@ export class AdminController {
     await execute('DELETE FROM people WHERE id = :id', { id: person.id });
     const label = person.full_name || (person.username ? `@${person.username}` : `ID ${person.telegram_id}`);
     this.flash(`История общения сброшена: ${label}`);
+  }
+
+  async sendDirectMessage(form) {
+    const personId = Number(form.person_id || 0);
+    const text = String(form.text || '').trim();
+    if (!text) throw new Error('Введите текст сообщения');
+    if (text.length > 8000) throw new Error('Сообщение слишком длинное');
+
+    const person = await queryOne('SELECT id, telegram_id, full_name, username FROM people WHERE id = :id LIMIT 1', { id: personId });
+    if (!person) throw new Error('Контакт не найден');
+    const telegramId = Number(person.telegram_id || 0);
+    if (!telegramId) throw new Error('У контакта нет Telegram ID');
+
+    try {
+      await this.telegram.sendMessage(telegramId, text);
+      await this.chat.recordOutgoing({
+        personId: person.id,
+        telegramId,
+        text,
+        status: 'sent',
+      });
+      this.flash('Сообщение отправлено');
+    } catch (error) {
+      await this.chat.recordOutgoing({
+        personId: person.id,
+        telegramId,
+        text,
+        status: 'failed',
+        error: error.message,
+      });
+      throw error;
+    }
   }
 
   async sendSimulatorMessage(text) {
@@ -895,9 +1099,10 @@ export class AdminController {
     const contentType = ['video_note', 'photo', 'video'].includes(form.content_type) ? form.content_type : 'text';
     const body = String(form.body || '').trim();
     const mediaFileId = contentType === 'text' ? '' : String(form.media_file_id || '').trim();
+    const mediaUpload = contentType === 'text' ? null : this.broadcastMediaUpload(contentType, form.media_upload);
     if (!title) throw new Error('Заполните название рассылки');
     if (contentType === 'text' && !body) throw new Error('Для текстовой рассылки заполните текст сообщения');
-    if (contentType !== 'text' && !mediaFileId) throw new Error('Для медиа-рассылки добавьте HTTPS-ссылку или Telegram file_id');
+    if (contentType !== 'text' && !mediaFileId && !mediaUpload) throw new Error('Для медиа-рассылки загрузите файл или добавьте HTTPS-ссылку / Telegram file_id');
 
     const recipients = await this.broadcastRecipients(audience, eventId);
     if (recipients.length === 0) {
@@ -912,19 +1117,23 @@ export class AdminController {
         contentType,
         body: body || null,
         mediaFileId: mediaFileId || null,
+        mediaBlob: mediaUpload?.buffer || null,
+        mediaMime: mediaUpload?.mimeType || null,
+        mediaName: mediaUpload?.filename || null,
+        mediaSize: mediaUpload?.size || null,
         now: createdAt,
       };
       const inserted = isSqlite()
         ? await tx.execute(
           `INSERT INTO broadcast_campaigns
-           (title, audience, event_id, content_type, body, media_file_id, status, created_at, updated_at)
-           VALUES (:title, :audience, :eventId, :contentType, :body, :mediaFileId, 'queued', :now, :now)`,
+           (title, audience, event_id, content_type, body, media_file_id, media_blob, media_mime, media_name, media_size, status, created_at, updated_at)
+           VALUES (:title, :audience, :eventId, :contentType, :body, :mediaFileId, :mediaBlob, :mediaMime, :mediaName, :mediaSize, 'queued', :now, :now)`,
           campaignValues,
         )
         : await tx.execute(
           `INSERT INTO broadcast_campaigns
-           (title, audience, event_id, content_type, body, media_file_id, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+           (title, audience, event_id, content_type, body, media_file_id, media_blob, media_mime, media_name, media_size, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
           [
             campaignValues.title,
             campaignValues.audience,
@@ -932,6 +1141,10 @@ export class AdminController {
             campaignValues.contentType,
             campaignValues.body,
             campaignValues.mediaFileId,
+            campaignValues.mediaBlob,
+            campaignValues.mediaMime,
+            campaignValues.mediaName,
+            campaignValues.mediaSize,
             campaignValues.now,
             campaignValues.now,
           ],
@@ -969,9 +1182,96 @@ export class AdminController {
     this.flash(`Рассылка поставлена в очередь: ${recipients.length} получателей`);
   }
 
+  broadcastMediaUpload(contentType, upload) {
+    if (!upload || !upload.buffer || Number(upload.size || 0) <= 0) {
+      return null;
+    }
+
+    const size = Number(upload.size || upload.buffer.length || 0);
+    const limit = BROADCAST_UPLOAD_LIMITS[contentType] || 0;
+    if (limit > 0 && size > limit) {
+      throw new Error(`Файл слишком большой: максимум ${Math.round(limit / 1024 / 1024)} МБ`);
+    }
+
+    const mimeType = String(upload.mimeType || 'application/octet-stream').toLowerCase();
+    if (contentType === 'photo' && !mimeType.startsWith('image/')) {
+      throw new Error('Для типа «Картинка» загрузите файл изображения');
+    }
+    if ((contentType === 'video' || contentType === 'video_note') && !mimeType.startsWith('video/')) {
+      throw new Error('Для видео-рассылки загрузите видеофайл');
+    }
+
+    const filename = String(upload.filename || defaultBroadcastFilename(contentType)).trim().slice(0, 180);
+    return {
+      buffer: Buffer.isBuffer(upload.buffer) ? upload.buffer : Buffer.from(upload.buffer),
+      mimeType,
+      filename: filename || defaultBroadcastFilename(contentType),
+      size,
+    };
+  }
+
   async processMessageQueue() {
     const result = await processDueMessages({ limit: 100 });
     this.flash(`Очередь обработана: рассылки ${result.broadcasts.sent} отправлено, ${result.broadcasts.failed} ошибок, ${result.broadcasts.picked} взято в работу`);
+  }
+
+  async processBroadcastCampaign(form) {
+    const campaign = await this.broadcastCampaignById(Number(form.id || 0));
+    if (!campaign) throw new Error('Рассылка не найдена');
+    if (campaign.status === 'cancelled') throw new Error('Рассылка отменена');
+    const queued = Number(campaign.queued_messages || 0);
+    if (queued <= 0) throw new Error('В этой рассылке нет сообщений в очереди');
+    const result = await processDueMessages({ limit: Math.min(500, Math.max(queued, 60)), broadcastCampaignId: campaign.id });
+    this.flash(`Рассылка обработана: ${result.broadcasts.sent} отправлено, ${result.broadcasts.failed} ошибок, ${result.broadcasts.picked} взято в работу`);
+  }
+
+  async retryBroadcastCampaign(form) {
+    const campaign = await this.broadcastCampaignById(Number(form.id || 0));
+    if (!campaign) throw new Error('Рассылка не найдена');
+    if (campaign.status === 'cancelled') throw new Error('Отмененную рассылку нельзя повторить');
+    const failed = Number(campaign.failed_messages || 0);
+    if (failed <= 0) throw new Error('В этой рассылке нет ошибок для повтора');
+    const now = nowSql();
+    await withTransaction(async (tx) => {
+      await tx.execute(
+        "UPDATE broadcast_messages SET status = 'queued', error = NULL, updated_at = :now WHERE campaign_id = :campaignId AND status = 'failed'",
+        { campaignId: campaign.id, now },
+      );
+      await tx.execute(
+        "UPDATE broadcast_campaigns SET status = 'queued', updated_at = :now WHERE id = :campaignId",
+        { campaignId: campaign.id, now },
+      );
+    });
+    this.flash(`Ошибки возвращены в очередь: ${failed}`);
+  }
+
+  async cancelBroadcastCampaign(form) {
+    const campaign = await this.broadcastCampaignById(Number(form.id || 0));
+    if (!campaign) throw new Error('Рассылка не найдена');
+    const queued = Number(campaign.queued_messages || 0);
+    if (queued <= 0) throw new Error('В этой рассылке нет сообщений в очереди');
+    const now = nowSql();
+    await withTransaction(async (tx) => {
+      await tx.execute(
+        "UPDATE broadcast_messages SET status = 'cancelled', error = :error, updated_at = :now WHERE campaign_id = :campaignId AND status = 'queued'",
+        { campaignId: campaign.id, error: 'Отменено модератором', now },
+      );
+      await tx.execute(
+        "UPDATE broadcast_campaigns SET status = 'cancelled', updated_at = :now WHERE id = :campaignId",
+        { campaignId: campaign.id, now },
+      );
+    });
+    this.flash(`Отменено сообщений в очереди: ${queued}`);
+  }
+
+  async deleteBroadcastCampaign(form) {
+    const campaign = await this.broadcastCampaignById(Number(form.id || 0));
+    if (!campaign) throw new Error('Рассылка не найдена');
+    await withTransaction(async (tx) => {
+      await tx.execute('DELETE FROM broadcast_messages WHERE campaign_id = :campaignId', { campaignId: campaign.id });
+      await tx.execute('DELETE FROM broadcast_campaigns WHERE id = :campaignId', { campaignId: campaign.id });
+    });
+    this.flash('Рассылка удалена');
   }
 
   async broadcastRecipientsJson(url) {
@@ -1003,11 +1303,33 @@ export class AdminController {
 
   async broadcastCampaigns() {
     return query(
-      `SELECT c.*, e.title AS event_title,
+      `${this.broadcastCampaignsSelect()}
+       ORDER BY c.created_at DESC
+       LIMIT 50`,
+    );
+  }
+
+  async broadcastCampaignById(id) {
+    if (Number(id || 0) <= 0) {
+      return null;
+    }
+    return queryOne(
+      `${this.broadcastCampaignsSelect()}
+       WHERE c.id = :id
+       LIMIT 1`,
+      { id: Number(id) },
+    );
+  }
+
+  broadcastCampaignsSelect() {
+    return `SELECT c.id, c.title, c.audience, c.event_id, c.content_type, c.body, c.media_file_id,
+        c.media_mime, c.media_name, c.media_size, c.status, c.created_at, c.updated_at,
+        e.title AS event_title,
         COALESCE(s.total, 0) AS total_messages,
         COALESCE(s.queued, 0) AS queued_messages,
         COALESCE(s.sent, 0) AS sent_messages,
         COALESCE(s.failed, 0) AS failed_messages,
+        COALESCE(s.cancelled, 0) AS cancelled_messages,
         s.last_error
        FROM broadcast_campaigns c
        LEFT JOIN events e ON e.id = c.event_id
@@ -1017,13 +1339,11 @@ export class AdminController {
            SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued,
            SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) AS sent,
            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+           SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled,
            MAX(CASE WHEN status = 'failed' THEN error ELSE NULL END) AS last_error
          FROM broadcast_messages
          GROUP BY campaign_id
-       ) s ON s.campaign_id = c.id
-       ORDER BY c.created_at DESC
-       LIMIT 50`,
-    );
+       ) s ON s.campaign_id = c.id`;
   }
 
   async registrationWithDetails(id) {
@@ -1372,17 +1692,25 @@ export class AdminController {
     const sent = Number(campaign.sent_messages || 0);
     const queued = Number(campaign.queued_messages || 0);
     const failed = Number(campaign.failed_messages || 0);
+    const cancelled = Number(campaign.cancelled_messages || 0);
     if (total === 0) {
       return '<span class="muted">Нет получателей</span>';
     }
 
-    return `<div class="broadcast-stats"><span class="badge ok">Отправлено ${sent}</span><span class="badge warn">В очереди ${queued}</span>${failed > 0 ? `<span class="badge danger">Ошибки ${failed}</span>` : ''}<span class="muted">Всего ${total}</span></div>`;
+    return `<div class="broadcast-stats"><span class="badge ok">Отправлено ${sent}</span><span class="badge warn">В очереди ${queued}</span>${failed > 0 ? `<span class="badge danger">Ошибки ${failed}</span>` : ''}${cancelled > 0 ? `<span class="badge">Отменено ${cancelled}</span>` : ''}<span class="muted">Всего ${total}</span></div>`;
   }
 
   broadcastStatusLabel(campaign) {
     const status = String(campaign.status || '');
+    const total = Number(campaign.total_messages || 0);
     const queued = Number(campaign.queued_messages || 0);
     const failed = Number(campaign.failed_messages || 0);
+    if (total === 0) {
+      return '<span class="badge">Нет получателей</span>';
+    }
+    if (status === 'cancelled') {
+      return '<span class="badge">Отменена</span>';
+    }
     if (failed > 0) {
       return '<span class="badge danger">Есть ошибки</span>';
     }
@@ -1396,6 +1724,48 @@ export class AdminController {
       return '<span class="badge danger">Ошибка</span>';
     }
     return `<span class="badge">${h(status || 'queued')}</span>`;
+  }
+
+  broadcastCampaignActions(campaign) {
+    const queued = Number(campaign.queued_messages || 0);
+    const failed = Number(campaign.failed_messages || 0);
+    const status = String(campaign.status || '');
+    const actions = [];
+
+    if (queued > 0 && status !== 'cancelled') {
+      actions.push(this.broadcastCampaignActionForm(campaign, 'process_broadcast_campaign', 'Отправить сейчас', 'button button-primary'));
+      actions.push(this.broadcastCampaignActionForm(
+        campaign,
+        'cancel_broadcast_campaign',
+        'Отменить очередь',
+        'button muted-button',
+        'Отменить все сообщения этой рассылки, которые еще не отправлены?',
+      ));
+    }
+
+    if (failed > 0 && status !== 'cancelled') {
+      actions.push(this.broadcastCampaignActionForm(
+        campaign,
+        'retry_broadcast_campaign',
+        'Повторить ошибки',
+        'button muted-button',
+        'Вернуть сообщения с ошибками в очередь?',
+      ));
+    }
+
+    actions.push(this.broadcastCampaignActionForm(
+      campaign,
+      'delete_broadcast_campaign',
+      'Удалить',
+      'button danger',
+      'Удалить рассылку и всю историю ее доставки? Это действие нельзя отменить.',
+    ));
+
+    return `<div class="broadcast-row-actions">${actions.join('')}</div>`;
+  }
+
+  broadcastCampaignActionForm(campaign, action, label, buttonClass, confirm = '') {
+    return `<form method="post" class="inline-form" ${confirm ? `data-confirm="${h(confirm)}"` : ''}>${csrfField(this.session)}<input type="hidden" name="action" value="${h(action)}"><input type="hidden" name="_return" value="/?page=broadcasts&tab=history"><input type="hidden" name="id" value="${Number(campaign.id)}"><button class="${h(buttonClass)}" type="submit">${h(label)}</button></form>`;
   }
 
   statusLabel(status, attendance = '') {
@@ -1627,6 +1997,7 @@ export class AdminController {
       events: 'Мероприятия',
       event_edit: 'Мероприятие',
       people: 'Люди',
+      messages: 'Общение',
       registrations: 'Регистрации',
       reception: 'Ресепшн',
       broadcasts: 'Рассылки',
@@ -1651,6 +2022,7 @@ export class AdminController {
       ['registrations', '/', 'Регистрации', 'registrations'],
       ['reception', '/?page=reception', 'Ресепшн', 'reception'],
       ['people', '/?page=people', 'Люди', 'people'],
+      ['messages', '/?page=messages', 'Общение', 'messages'],
       ['events', '/?page=events', 'Мероприятия', 'events'],
       ['broadcasts', '/?page=broadcasts', 'Рассылки', 'broadcasts'],
       ['flow', '/?page=flow', 'Сценарий', 'flow'],
@@ -1671,6 +2043,7 @@ export class AdminController {
       registrations: '<rect x="4" y="5" width="16" height="14" rx="2"></rect><path d="M8 9h8M8 13h5"></path>',
       reception: '<path d="M9 11l2 2 4-5"></path><rect x="5" y="4" width="14" height="16" rx="2"></rect><path d="M9 18h6"></path>',
       people: '<path d="M16 19c0-2.2-1.8-4-4-4s-4 1.8-4 4"></path><circle cx="12" cy="9" r="3"></circle><path d="M20 19c0-1.8-1.1-3.2-2.7-3.8M16.5 6.4a2.5 2.5 0 0 1 0 4.2"></path>',
+      messages: '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7A2.5 2.5 0 0 1 17.5 16H9l-5 4v-4.5A2.5 2.5 0 0 1 4 13.5z"></path><path d="M8 9h8"></path><path d="M8 12h5"></path>',
       events: '<rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M8 3v4M16 3v4M4 10h16M8 14h3M13 14h3"></path>',
       broadcasts: '<path d="M4 12h3l9-5v10l-9-5H4z"></path><path d="M18 9.5a4 4 0 0 1 0 5"></path>',
       flow: '<circle cx="6" cy="6" r="2"></circle><circle cx="18" cy="6" r="2"></circle><circle cx="12" cy="18" r="2"></circle><path d="M8 6h8M7 8l4 8M17 8l-4 8"></path>',
@@ -1939,6 +2312,12 @@ export class AdminController {
     if (row.event_title) name += ` - ${row.event_title}`;
     return name;
   }
+}
+
+function defaultBroadcastFilename(contentType) {
+  if (contentType === 'photo') return 'broadcast-image.jpg';
+  if (contentType === 'video_note') return 'broadcast-video-note.mp4';
+  return 'broadcast-video.mp4';
 }
 
 function redirect(location) {

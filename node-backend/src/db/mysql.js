@@ -251,6 +251,10 @@ function ensureSqliteSchema(database) {
       content_type TEXT NOT NULL DEFAULT 'text',
       body TEXT NULL,
       media_file_id TEXT NULL,
+      media_blob BLOB NULL,
+      media_mime TEXT NULL,
+      media_name TEXT NULL,
+      media_size INTEGER NULL,
       status TEXT NOT NULL DEFAULT 'queued',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -272,6 +276,23 @@ function ensureSqliteSchema(database) {
       FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      person_id INTEGER NOT NULL,
+      telegram_id INTEGER NOT NULL,
+      direction TEXT NOT NULL,
+      message_type TEXT NOT NULL DEFAULT 'text',
+      text TEXT NULL,
+      status TEXT NOT NULL DEFAULT 'received',
+      error TEXT NULL,
+      sent_at TEXT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_person_created ON chat_messages (person_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_chat_created ON chat_messages (created_at);
+
     CREATE TABLE IF NOT EXISTS bot_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       level TEXT NOT NULL,
@@ -283,6 +304,10 @@ function ensureSqliteSchema(database) {
 
   ensureSqliteColumn(database, 'registrations', 'archived_at', 'TEXT NULL');
   ensureSqliteColumn(database, 'registrations', 'facecast_ticket_id', 'TEXT NULL');
+  ensureSqliteColumn(database, 'broadcast_campaigns', 'media_blob', 'BLOB NULL');
+  ensureSqliteColumn(database, 'broadcast_campaigns', 'media_mime', 'TEXT NULL');
+  ensureSqliteColumn(database, 'broadcast_campaigns', 'media_name', 'TEXT NULL');
+  ensureSqliteColumn(database, 'broadcast_campaigns', 'media_size', 'INTEGER NULL');
   database.exec('CREATE INDEX IF NOT EXISTS idx_registrations_archived ON registrations (archived_at)');
 
   const count = database.prepare('SELECT COUNT(*) AS total FROM events').get();

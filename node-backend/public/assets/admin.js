@@ -499,6 +499,11 @@
     simFeed.scrollTop = simFeed.scrollHeight;
   }
 
+  var messagesFeed = document.querySelector('[data-messages-feed]');
+  if (messagesFeed) {
+    messagesFeed.scrollTop = messagesFeed.scrollHeight;
+  }
+
   var broadcastForm = document.querySelector('form[data-broadcast-form]');
   if (broadcastForm) {
     var audienceSelect = broadcastForm.querySelector('select[name="audience"]');
@@ -506,6 +511,7 @@
     var contentTypeSelect = broadcastForm.querySelector('select[name="content_type"]');
     var bodyInput = broadcastForm.querySelector('textarea[name="body"]');
     var mediaInput = broadcastForm.querySelector('[data-broadcast-media-input]');
+    var fileInput = broadcastForm.querySelector('[data-broadcast-file-input]');
     var mediaGuides = broadcastForm.querySelectorAll('[data-media-guide]');
     var preview = document.querySelector('[data-broadcast-preview]');
     var previewCount = document.querySelector('[data-broadcast-preview-count]');
@@ -532,16 +538,28 @@
       });
 
       if (mediaInput) {
-        mediaInput.required = type !== 'text';
+        mediaInput.required = false;
         mediaInput.disabled = type === 'text';
         if (type === 'photo') {
-          mediaInput.placeholder = 'https://site.ru/image.jpg или AgACAgIA...';
+          mediaInput.placeholder = 'Необязательно: https://site.ru/image.jpg или AgACAgIA...';
         } else if (type === 'video') {
-          mediaInput.placeholder = 'https://site.ru/video.mp4 или BAACAgIA...';
+          mediaInput.placeholder = 'Необязательно: https://site.ru/video.mp4 или BAACAgIA...';
         } else if (type === 'video_note') {
-          mediaInput.placeholder = 'Telegram file_id кружка';
+          mediaInput.placeholder = 'Необязательно: Telegram file_id кружка';
         } else {
           mediaInput.placeholder = 'Для текста оставьте пустым';
+        }
+      }
+
+      if (fileInput) {
+        fileInput.disabled = type === 'text';
+        if (type === 'photo') {
+          fileInput.accept = 'image/*';
+        } else if (type === 'video' || type === 'video_note') {
+          fileInput.accept = 'video/mp4,video/quicktime,video/webm,video/*';
+        } else {
+          fileInput.accept = 'image/*,video/mp4,video/quicktime,video/webm';
+          fileInput.value = '';
         }
       }
 
@@ -669,6 +687,18 @@
     if (contentTypeSelect) {
       contentTypeSelect.addEventListener('change', syncBroadcastMediaGuide);
     }
+    broadcastForm.addEventListener('submit', function (event) {
+      var type = contentTypeSelect ? contentTypeSelect.value : 'text';
+      if (type === 'text') {
+        return;
+      }
+      var hasFile = Boolean(fileInput && fileInput.files && fileInput.files.length > 0);
+      var hasMediaValue = Boolean(mediaInput && String(mediaInput.value || '').trim());
+      if (!hasFile && !hasMediaValue) {
+        event.preventDefault();
+        window.alert('Загрузите файл или вставьте ссылку / Telegram file_id.');
+      }
+    });
     syncBroadcastMediaGuide();
     loadBroadcastPreview();
   }
