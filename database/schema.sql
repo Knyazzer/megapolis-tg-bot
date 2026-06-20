@@ -92,10 +92,14 @@ CREATE TABLE IF NOT EXISTS broadcast_campaigns (
   title VARCHAR(255) NOT NULL,
   audience VARCHAR(80) NOT NULL,
   event_id BIGINT UNSIGNED NULL,
-  content_type ENUM('text','video_note','photo') NOT NULL DEFAULT 'text',
+  content_type ENUM('text','video_note','photo','video') NOT NULL DEFAULT 'text',
   body TEXT NULL,
   media_file_id VARCHAR(500) NULL,
-  status ENUM('draft','queued','sending','sent','failed') NOT NULL DEFAULT 'queued',
+  media_blob MEDIUMBLOB NULL,
+  media_mime VARCHAR(100) NULL,
+  media_name VARCHAR(255) NULL,
+  media_size INT UNSIGNED NULL,
+  status ENUM('draft','queued','sending','sent','failed','cancelled') NOT NULL DEFAULT 'queued',
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
   INDEX idx_campaigns_status (status),
@@ -107,7 +111,7 @@ CREATE TABLE IF NOT EXISTS broadcast_messages (
   campaign_id BIGINT UNSIGNED NOT NULL,
   person_id BIGINT UNSIGNED NOT NULL,
   telegram_id BIGINT NOT NULL,
-  status ENUM('queued','sent','failed') NOT NULL DEFAULT 'queued',
+  status ENUM('queued','sent','failed','cancelled') NOT NULL DEFAULT 'queued',
   sent_at DATETIME NULL,
   error TEXT NULL,
   created_at DATETIME NOT NULL,
@@ -116,6 +120,22 @@ CREATE TABLE IF NOT EXISTS broadcast_messages (
   INDEX idx_broadcast_messages_queue (status, id),
   CONSTRAINT fk_broadcast_campaign FOREIGN KEY (campaign_id) REFERENCES broadcast_campaigns(id) ON DELETE CASCADE,
   CONSTRAINT fk_broadcast_person FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  person_id BIGINT UNSIGNED NOT NULL,
+  telegram_id BIGINT NOT NULL,
+  direction ENUM('in','out') NOT NULL,
+  message_type VARCHAR(32) NOT NULL DEFAULT 'text',
+  text TEXT NULL,
+  status ENUM('received','sent','failed') NOT NULL DEFAULT 'received',
+  error TEXT NULL,
+  sent_at DATETIME NULL,
+  created_at DATETIME NOT NULL,
+  INDEX idx_chat_person_created (person_id, created_at),
+  INDEX idx_chat_created (created_at),
+  CONSTRAINT fk_chat_person FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS bot_logs (

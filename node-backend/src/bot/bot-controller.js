@@ -7,6 +7,7 @@ import {
 } from '../repositories/events-repository.js';
 import { PeopleRepository, profileComplete } from '../repositories/people-repository.js';
 import { RegistrationsRepository } from '../repositories/registrations-repository.js';
+import { ChatRepository } from '../repositories/chat-repository.js';
 import { FacecastClient } from '../services/facecast-client.js';
 import { ReminderPlanner } from '../services/reminder-planner.js';
 import { TelegramClient } from '../services/telegram-client.js';
@@ -32,6 +33,7 @@ export class BotController {
     this.people = new PeopleRepository();
     this.events = new EventsRepository();
     this.registrations = new RegistrationsRepository();
+    this.chat = new ChatRepository();
     this.facecast = new FacecastClient();
     this.planner = new ReminderPlanner();
   }
@@ -59,6 +61,7 @@ export class BotController {
     }
 
     const person = await this.people.upsertFromTelegram(from);
+    await this.recordIncomingChatMessage(person, chatId, message);
     const text = String(message.text || '').trim();
     const state = String(person.state || 'new');
 
@@ -826,6 +829,44 @@ export class BotController {
     }
 
     return null;
+  }
+
+  async recordIncomingChatMessage(person, chatId, message) {
+    try {
+      await this.chat.recordIncoming({
+        personId: person.id,
+        telegramId: chatId,
+        messageType: this.chatMessageType(message),
+        text: this.chatMessageText(message),
+      });
+    } catch (error) {
+      logger.warn('failed to record incoming chat message', { personId: person.id, message: error.message });
+    }
+  }
+
+  chatMessageType(message) {
+    if (message.video_note) return 'video_note';
+    if (message.video) return 'video';
+    if (message.photo) return 'photo';
+    if (message.contact) return 'contact';
+    if (message.document) return 'document';
+    if (message.voice) return 'voice';
+    if (message.text) return 'text';
+    return 'message';
+  }
+
+  chatMessageText(message) {
+    const caption = String(message.caption || '').trim();
+    if (message.text) return String(message.text);
+    if (message.contact) {
+      return `Контакт: ${message.contact.phone_number || ''}`.trim();
+    }
+    if (message.video_note) return caption || 'Кружок';
+    if (message.video) return caption || 'Видео';
+    if (message.photo) return caption || 'Картинка';
+    if (message.document) return caption || `Файл: ${message.document.file_name || ''}`.trim();
+    if (message.voice) return caption || 'Голосовое сообщение';
+    return 'Сообщение без текста';
   }
 
   consentText() {

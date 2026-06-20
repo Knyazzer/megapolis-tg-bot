@@ -1,4 +1,4 @@
-import { query } from '../db/mysql.js';
+import { query, queryOne } from '../db/mysql.js';
 import { FacecastClient } from '../services/facecast-client.js';
 import { TelegramClient } from '../services/telegram-client.js';
 import { dateShort, nowSql, timeOnly, timeRange } from '../utils/dates.js';
@@ -7,11 +7,13 @@ import { logger } from '../utils/logger.js';
 
 const facecast = new FacecastClient();
 
-export async function processDueMessages({ limit = 50 } = {}) {
+export async function processDueMessages({ limit = 50, broadcastCampaignId = null } = {}) {
   const telegram = new TelegramClient();
   const safeLimit = sqlLimit(limit);
-  const scheduled = await processScheduledMessages(telegram, safeLimit);
-  const broadcasts = await processBroadcastMessages(telegram, Math.max(safeLimit, 60));
+  const scheduled = broadcastCampaignId
+    ? { picked: 0, sent: 0, skipped: 0, failed: 0 }
+    : await processScheduledMessages(telegram, safeLimit);
+  const broadcasts = await processBroadcastMessages(telegram, Math.max(safeLimit, 60), broadcastCampaignId);
   return { scheduled, broadcasts };
 }
 
@@ -75,33 +77,43 @@ async function processScheduledMessages(telegram, limit) {
   return { picked: rows.length, sent, skipped, failed };
 }
 
-async function processBroadcastMessages(telegram, limit) {
+async function processBroadcastMessages(telegram, limit, campaignId = null) {
   const rowLimit = sqlLimit(limit);
+  const campaignFilter = Number(campaignId || 0) > 0 ? 'AND bm.campaign_id = :campaignId' : '';
   const rows = await query(
-    `SELECT bm.*, c.content_type, c.body, c.media_file_id, c.id AS campaign_id
+    `SELECT bm.*, c.content_type, c.body, c.media_file_id, c.media_mime, c.media_name, c.media_size, c.id AS campaign_id
      FROM broadcast_messages bm
      JOIN broadcast_campaigns c ON c.id = bm.campaign_id
      WHERE bm.status = 'queued'
+       AND c.status != 'cancelled'
+       ${campaignFilter}
      ORDER BY bm.id ASC
      LIMIT ${rowLimit}`,
+    campaignFilter ? { campaignId: Number(campaignId) } : {},
   );
 
   let sent = 0;
   let failed = 0;
+  const cachedMediaFileIds = new Map();
+  const cachedMediaUploads = new Map();
 
   for (const row of rows) {
     try {
-      if (row.content_type === 'video_note' && row.media_file_id) {
-        await telegram.sendVideoNote(Number(row.telegram_id), String(row.media_file_id));
-      } else if (row.content_type === 'photo' && row.media_file_id) {
+      let telegramResult = null;
+      const media = await broadcastMedia(row, cachedMediaFileIds, cachedMediaUploads);
+      if (row.content_type === 'video_note' && media) {
+        telegramResult = await telegram.sendVideoNote(Number(row.telegram_id), media);
+      } else if (row.content_type === 'photo' && media) {
         const caption = telegramMediaCaption(row.body);
-        await telegram.sendPhoto(Number(row.telegram_id), String(row.media_file_id), caption);
+        telegramResult = await telegram.sendPhoto(Number(row.telegram_id), media, caption);
         if (caption) row.body = '';
-      } else if (row.content_type === 'video' && row.media_file_id) {
+      } else if (row.content_type === 'video' && media) {
         const caption = telegramMediaCaption(row.body);
-        await telegram.sendVideo(Number(row.telegram_id), String(row.media_file_id), caption);
+        telegramResult = await telegram.sendVideo(Number(row.telegram_id), media, caption);
         if (caption) row.body = '';
       }
+
+      await rememberTelegramFileId(row, telegramResult, cachedMediaFileIds);
 
       if (String(row.body || '').trim() !== '') {
         await telegram.sendMessage(Number(row.telegram_id), String(row.body));
@@ -124,6 +136,87 @@ async function processBroadcastMessages(telegram, limit) {
 
   await refreshCampaignStatuses(rows);
   return { picked: rows.length, sent, failed };
+}
+
+async function broadcastMedia(row, cachedMediaFileIds, cachedMediaUploads) {
+  const cachedFileId = cachedMediaFileIds.get(Number(row.campaign_id));
+  const fileId = String(row.media_file_id || cachedFileId || '').trim();
+  if (fileId) {
+    return fileId;
+  }
+
+  const campaignId = Number(row.campaign_id);
+  if (!cachedMediaUploads.has(campaignId)) {
+    cachedMediaUploads.set(campaignId, await loadBroadcastMediaUpload(row));
+  }
+
+  return cachedMediaUploads.get(campaignId) || '';
+}
+
+async function loadBroadcastMediaUpload(row) {
+  const media = await queryOne(
+    'SELECT media_blob, media_mime, media_name, media_size FROM broadcast_campaigns WHERE id = :id LIMIT 1',
+    { id: row.campaign_id },
+  );
+  const blob = media?.media_blob;
+  if (!blob) {
+    return '';
+  }
+
+  const buffer = Buffer.isBuffer(blob) ? blob : Buffer.from(blob);
+  if (buffer.length === 0) {
+    return '';
+  }
+
+  return {
+    buffer,
+    filename: String(media.media_name || row.media_name || defaultBroadcastMediaName(row.content_type)),
+    mimeType: String(media.media_mime || row.media_mime || defaultBroadcastMime(row.content_type)),
+    size: Number(media.media_size || row.media_size || buffer.length),
+  };
+}
+
+async function rememberTelegramFileId(row, telegramResult, cachedMediaFileIds) {
+  if (String(row.media_file_id || '').trim() !== '') {
+    return;
+  }
+
+  const fileId = extractTelegramFileId(row.content_type, telegramResult);
+  if (!fileId) {
+    return;
+  }
+
+  cachedMediaFileIds.set(Number(row.campaign_id), fileId);
+  await query(
+    `UPDATE broadcast_campaigns
+     SET media_file_id = :fileId, updated_at = :now
+     WHERE id = :campaignId AND (media_file_id IS NULL OR media_file_id = '')`,
+    { campaignId: row.campaign_id, fileId, now: nowSql() },
+  );
+}
+
+function extractTelegramFileId(contentType, response) {
+  if (contentType === 'photo') {
+    const photos = response?.result?.photo || [];
+    return String(photos[photos.length - 1]?.file_id || '').trim();
+  }
+  if (contentType === 'video') {
+    return String(response?.result?.video?.file_id || '').trim();
+  }
+  if (contentType === 'video_note') {
+    return String(response?.result?.video_note?.file_id || '').trim();
+  }
+  return '';
+}
+
+function defaultBroadcastMediaName(contentType) {
+  if (contentType === 'photo') return 'broadcast-image.jpg';
+  if (contentType === 'video_note') return 'broadcast-video-note.mp4';
+  return 'broadcast-video.mp4';
+}
+
+function defaultBroadcastMime(contentType) {
+  return contentType === 'photo' ? 'image/jpeg' : 'video/mp4';
 }
 
 function telegramMediaCaption(text) {
@@ -280,19 +373,32 @@ async function refreshCampaignStatuses(rows) {
   const campaignIds = [...new Set(rows.map((row) => Number(row.campaign_id)).filter(Boolean))];
 
   for (const campaignId of campaignIds) {
-    const pending = await query(
-      "SELECT COUNT(*) AS total FROM broadcast_messages WHERE campaign_id = :campaignId AND status = 'queued'",
+    const stats = await query(
+      `SELECT
+         COUNT(*) AS total,
+         SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued,
+         SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+         SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled
+       FROM broadcast_messages
+       WHERE campaign_id = :campaignId`,
       { campaignId },
     );
-    if (Number(pending[0]?.total || 0) > 0) {
+    const total = Number(stats[0]?.total || 0);
+    const queued = Number(stats[0]?.queued || 0);
+    const failed = Number(stats[0]?.failed || 0);
+    const cancelled = Number(stats[0]?.cancelled || 0);
+    if (queued > 0) {
       continue;
     }
 
-    const failed = await query(
-      "SELECT COUNT(*) AS total FROM broadcast_messages WHERE campaign_id = :campaignId AND status = 'failed'",
-      { campaignId },
-    );
-    const status = Number(failed[0]?.total || 0) > 0 ? 'failed' : 'sent';
+    let status = 'sent';
+    if (cancelled > 0 && cancelled === total) {
+      status = 'cancelled';
+    } else if (failed > 0) {
+      status = 'failed';
+    } else if (cancelled > 0) {
+      status = 'cancelled';
+    }
     await query(
       'UPDATE broadcast_campaigns SET status = :status, updated_at = :now WHERE id = :campaignId',
       { campaignId, status, now: nowSql() },

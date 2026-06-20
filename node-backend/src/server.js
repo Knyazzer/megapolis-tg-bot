@@ -14,6 +14,7 @@ import { logger } from './utils/logger.js';
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const publicDir = normalize(join(currentDir, '../public'));
+const FORM_BODY_LIMIT = 60 * 1024 * 1024;
 
 const server = createServer(async (request, response) => {
   try {
@@ -56,6 +57,8 @@ const server = createServer(async (request, response) => {
     logger.error('http error', { message: error.message, stack: error.stack });
     if (error.status === 419) {
       text(response, 419, 'CSRF token mismatch');
+    } else if (error.status === 413) {
+      text(response, 413, 'Файл слишком большой');
     } else {
       json(response, 500, { ok: false, error: 'Internal server error' });
     }
@@ -261,7 +264,17 @@ function readJsonBody(request, limit = 1024 * 1024) {
 }
 
 async function readFormBody(request) {
-  const raw = await readRawBody(request);
+  const contentTypeHeader = String(request.headers['content-type'] || '');
+  if (contentTypeHeader.toLowerCase().startsWith('multipart/form-data')) {
+    const boundary = multipartBoundary(contentTypeHeader);
+    if (!boundary) {
+      return {};
+    }
+    const raw = await readRawBuffer(request, FORM_BODY_LIMIT);
+    return parseMultipartForm(raw, boundary);
+  }
+
+  const raw = await readRawBody(request, FORM_BODY_LIMIT);
   return Object.fromEntries(new URLSearchParams(raw));
 }
 
@@ -272,13 +285,105 @@ function readRawBody(request, limit = 1024 * 1024) {
     request.on('data', (chunk) => {
       body += chunk;
       if (body.length > limit) {
-        reject(new Error('Request body is too large'));
+        reject(httpError(413, 'Request body is too large'));
         request.destroy();
       }
     });
     request.on('end', () => resolve(body));
     request.on('error', reject);
   });
+}
+
+function readRawBuffer(request, limit = 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    request.on('data', (chunk) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buffer.length;
+      if (size > limit) {
+        reject(httpError(413, 'Request body is too large'));
+        request.destroy();
+        return;
+      }
+      chunks.push(buffer);
+    });
+    request.on('end', () => resolve(Buffer.concat(chunks)));
+    request.on('error', reject);
+  });
+}
+
+function parseMultipartForm(buffer, boundary) {
+  const form = {};
+  const boundaryBuffer = Buffer.from(`--${boundary}`);
+  let position = 0;
+
+  while (position < buffer.length) {
+    const boundaryStart = buffer.indexOf(boundaryBuffer, position);
+    if (boundaryStart === -1) break;
+    let partStart = boundaryStart + boundaryBuffer.length;
+    if (buffer[partStart] === 45 && buffer[partStart + 1] === 45) break;
+    if (buffer[partStart] === 13 && buffer[partStart + 1] === 10) {
+      partStart += 2;
+    }
+
+    const headerEnd = buffer.indexOf(Buffer.from('\r\n\r\n'), partStart);
+    if (headerEnd === -1) break;
+    const headerText = buffer.subarray(partStart, headerEnd).toString('utf8');
+    const dataStart = headerEnd + 4;
+    const nextBoundary = buffer.indexOf(boundaryBuffer, dataStart);
+    if (nextBoundary === -1) break;
+
+    let dataEnd = nextBoundary;
+    if (buffer[dataEnd - 2] === 13 && buffer[dataEnd - 1] === 10) {
+      dataEnd -= 2;
+    }
+
+    const disposition = headerText.match(/^content-disposition:\s*form-data;\s*(.+)$/im);
+    const name = disposition ? multipartHeaderParam(disposition[1], 'name') : '';
+    if (name) {
+      const filename = multipartHeaderParam(disposition[1], 'filename');
+      const data = buffer.subarray(dataStart, dataEnd);
+      if (filename !== null) {
+        if (filename !== '' && data.length > 0) {
+          const mimeType = headerText.match(/^content-type:\s*(.+)$/im)?.[1]?.trim() || 'application/octet-stream';
+          form[name] = {
+            filename: safeUploadFilename(filename),
+            mimeType,
+            size: data.length,
+            buffer: Buffer.from(data),
+          };
+        }
+      } else {
+        form[name] = data.toString('utf8');
+      }
+    }
+
+    position = nextBoundary;
+  }
+
+  return form;
+}
+
+function multipartBoundary(contentTypeHeader) {
+  const match = contentTypeHeader.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  return match ? String(match[1] || match[2] || '').trim() : '';
+}
+
+function multipartHeaderParam(value, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = String(value || '').match(new RegExp(`${escapedName}="([^"]*)"`, 'i'));
+  return match ? match[1] : null;
+}
+
+function safeUploadFilename(filename) {
+  return String(filename || 'media.bin').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 180) || 'media.bin';
+}
+
+function httpError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
 }
 
 function sendResult(response, result) {
