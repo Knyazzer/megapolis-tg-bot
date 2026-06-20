@@ -592,8 +592,9 @@ export class AdminController {
       return `${body}</tbody></table></div></section>`;
     }
 
-    body += '<div class="broadcast-compose"><div class="panel-head"><h2>Новая рассылка</h2><span class="muted">Выберите аудиторию и проверьте получателей</span></div><form method="post" class="form-grid" data-broadcast-form>';
+    body += '<div class="broadcast-compose"><div class="panel-head"><h2>Новая рассылка</h2><span class="muted">Выберите аудиторию и проверьте получателей</span></div><form method="post" class="form-grid broadcast-form" data-broadcast-form>';
     body += `${csrfField(this.session)}<input type="hidden" name="action" value="create_broadcast"><input type="hidden" name="_return" value="/?page=broadcasts&tab=history">`;
+    body += '<div class="broadcast-fields">';
     body += this.input('Название рассылки', 'title', '', true);
     body += '<label>Аудитория<select name="audience" required>';
     for (const [key, label] of Object.entries(this.audiences())) {
@@ -601,12 +602,17 @@ export class AdminController {
     }
     body += '</select></label><label>Мероприятие<select name="event_id"><option value="0">Не привязывать</option>';
     for (const event of events) body += `<option value="${Number(event.id)}">${h(`${event.title} - ${dateShort(event.date_start)}`)}</option>`;
-    body += '</select></label><label>Тип<select name="content_type"><option value="text">Текст</option><option value="photo">Картинка + текст</option><option value="video_note">Кружок + текст</option></select></label>';
+    body += '</select></label><label>Тип<select name="content_type"><option value="text">Текст</option><option value="photo">Картинка</option><option value="video">Видео</option><option value="video_note">Кружок / видео-сообщение</option></select></label>';
     body += this.textarea('Текст сообщения', 'body', '');
-    body += this.input('Telegram file_id или URL медиа', 'media_file_id', '');
-    body += '<p class="hint">Для картинки можно вставить HTTPS-ссылку или Telegram file_id. Для кружка нужен именно file_id: отправьте кружок боту от Telegram ID, указанного в ADMIN_TELEGRAM_IDS.</p>';
-    body += '<div class="broadcast-preview" data-broadcast-preview><div class="broadcast-preview-head"><strong>Получатели</strong><span class="muted" data-broadcast-preview-count>Загрузка...</span></div><div class="broadcast-preview-list" data-broadcast-preview-list></div></div>';
-    body += '<div class="actions"><button class="button button-primary" type="submit">Поставить в очередь</button><a class="button muted-button" href="/?page=broadcasts&tab=history">Открыть историю</a></div></form></div></section>';
+    body += '<label class="broadcast-media-field">Медиа<span class="field-caption">HTTPS-ссылка на медиа или Telegram file_id</span><input type="text" name="media_file_id" value="" data-broadcast-media-input placeholder="Для текста оставьте пустым"></label>';
+    body += '<div class="broadcast-media-help" data-broadcast-media-help>';
+    body += '<div class="media-guide is-active" data-media-guide="text"><strong>Текстовая рассылка</strong><span>Заполните только текст сообщения. Поле медиа можно оставить пустым.</span></div>';
+    body += '<div class="media-guide" data-media-guide="photo"><strong>Картинка</strong><ol><li>Выберите тип «Картинка».</li><li>В поле «Медиа» вставьте HTTPS-ссылку на изображение или Telegram file_id.</li><li>Чтобы получить file_id, отправьте картинку боту с аккаунта модератора.</li><li>Текст можно оставить пустым. Если заполнить, он уйдёт подписью под картинкой.</li></ol></div>';
+    body += '<div class="media-guide" data-media-guide="video"><strong>Видео</strong><ol><li>Выберите тип «Видео».</li><li>В поле «Медиа» вставьте HTTPS-ссылку на mp4-файл или Telegram file_id.</li><li>Чтобы получить file_id, отправьте видео боту с аккаунта модератора.</li><li>Текст можно оставить пустым. Если заполнить, он уйдёт подписью под видео.</li></ol></div>';
+    body += '<div class="media-guide" data-media-guide="video_note"><strong>Кружок в Telegram</strong><ol><li>Отправьте кружок вашему боту с аккаунта модератора.</li><li>Бот вернёт Telegram file_id — вставьте его в поле «Медиа».</li><li>Кружок уйдёт отдельным сообщением, текст отправится следом.</li></ol></div>';
+    body += '</div></div>';
+    body += '<aside class="broadcast-preview" data-broadcast-preview><div class="broadcast-preview-head"><strong>Получатели</strong><span class="muted" data-broadcast-preview-count>Загрузка...</span></div><div class="broadcast-preview-list" data-broadcast-preview-list></div></aside>';
+    body += '<div class="actions broadcast-actions"><button class="button button-primary" type="submit">Поставить в очередь</button><a class="button muted-button" href="/?page=broadcasts&tab=history">Открыть историю</a></div></form></div></section>';
     return body;
   }
 
@@ -886,10 +892,12 @@ export class AdminController {
     const title = String(form.title || '').trim();
     const audience = String(form.audience || '');
     const eventId = Number(form.event_id || 0);
-    const contentType = ['video_note', 'photo'].includes(form.content_type) ? form.content_type : 'text';
+    const contentType = ['video_note', 'photo', 'video'].includes(form.content_type) ? form.content_type : 'text';
     const body = String(form.body || '').trim();
-    const mediaFileId = String(form.media_file_id || '').trim();
-    if (!title || (!body && !mediaFileId)) throw new Error('Заполните название и текст или file_id');
+    const mediaFileId = contentType === 'text' ? '' : String(form.media_file_id || '').trim();
+    if (!title) throw new Error('Заполните название рассылки');
+    if (contentType === 'text' && !body) throw new Error('Для текстовой рассылки заполните текст сообщения');
+    if (contentType !== 'text' && !mediaFileId) throw new Error('Для медиа-рассылки добавьте HTTPS-ссылку или Telegram file_id');
 
     const recipients = await this.broadcastRecipients(audience, eventId);
     if (recipients.length === 0) {
@@ -1498,6 +1506,8 @@ export class AdminController {
       body += '<span class="sim-kind">Карта</span>';
     } else if (message.type === 'photo') {
       body += '<span class="sim-kind">Картинка</span>';
+    } else if (message.type === 'video') {
+      body += '<span class="sim-kind">Видео</span>';
     } else if (message.type === 'video_note') {
       body += '<span class="sim-kind">Кружок</span>';
     } else if (message.type === 'button') {
@@ -1675,7 +1685,7 @@ export class AdminController {
     const lanes = [
       ['Общий путь регистрации', 116, 356],
       ['Офлайн-гости и ресепшн', 510, 356],
-      ['Онлайн, напоминания и материалы', 904, 516],
+      ['Онлайн и напоминания', 904, 516],
     ];
     const columns = [
       ['Старт', 96],
@@ -1685,7 +1695,7 @@ export class AdminController {
       ['Выбор формата', 1952],
       ['Подтверждение', 2416],
       ['День события', 2880],
-      ['Материалы', 3344],
+      ['Посещение', 3344],
     ];
     let body = '<div class="flow-scaffold" aria-hidden="true">';
     for (const [title, top, height] of lanes) body += `<div class="flow-lane" style="top:${top}px;height:${height}px;"><span>${h(title)}</span></div>`;
@@ -1704,10 +1714,9 @@ export class AdminController {
       offline_rejected: this.flowNodeData('6A-', 'Офлайн отказ', 'Модерация', 2880, 154, [['Отказ модератора', 'К сожалению, сейчас не можем подтвердить офлайн-участие.\n\nНо вы можете присоединиться онлайн, так вы точно не пропустите эфир 💻']], ['Буду смотреть онлайн']),
       offline_approved: this.flowNodeData('7A', 'Офлайн подтвержден', 'Офлайн', 2416, 548, [['Подтверждение модератора', 'Офлайн-участие подтверждено 🏢\n\nЖдём вас на мероприятии:\nНазвание: {название}\nДата: {дата}\nВремя: {время}\nНаш адрес: {адрес}\nФормат: офлайн\n\nПеред событием пришлём напоминание. Маршрут держим под рукой, хорошее настроение тоже.'], ['Если есть координаты', 'После сообщения бот отправляет venue-карту с адресом площадки.']], ['Ресепшн', 'Напоминания']),
       reception: this.flowNodeData('7B', 'Ресепшн', 'Офлайн', 2880, 548, [['Системное действие', 'Пользователю сообщение не отправляется. Модератор на ресепшне ставит галочку в админке.']], ['Отметить приход']),
-      visited: this.flowNodeData('7C', 'Пришел', 'Офлайн', 3344, 548, [['Системное действие', 'Статус нужен для отчетности и дальнейшей рассылки материалов.']], ['Постпромо']),
+      visited: this.flowNodeData('7C', 'Пришел', 'Офлайн', 3344, 548, [['Системное действие', 'Статус нужен для отчетности. Материалы после события отправляем вручную через раздел рассылок.']], []),
       online_access: this.flowNodeData('6B', 'Онлайн / запасной доступ', 'Онлайн', 2416, 942, [['Доступ к эфиру', 'Готово, вы зарегистрированы онлайн! 💻\n\nПерсональная ссылка на просмотр будет в кнопке ниже.\nНазвание: {название}\nДата: {дата}\nВремя подключения: {время старта онлайна}\n\nСохраните сообщение, а перед эфиром мы напомним о старте.'], ['Если уже есть офлайн', 'Вы остаётесь в списке офлайн-гостей 🏢\n\nЗапасная персональная ссылка на эфир будет в кнопке ниже.\n\nГлавным вариантом оставляем офлайн-встречу, а ссылку держите как запасной доступ.']], ['Персональная ссылка на эфир', 'Напомнить доступ']),
       reminders: this.flowNodeData('8', 'Напоминания', 'Автоматизация', 2880, 942, [['Офлайн за день', 'Напоминаем о встрече завтра 🏢'], ['Офлайн за 2 часа', 'До офлайн-встречи осталось около двух часов 🙂\n\nЛучше прийти спокойно, чем соревноваться с городским трафиком.'], ['Онлайн за 15 минут', 'Напоминаем про эфир 💻\n\nНачинаем через 15 минут. Можно налить чай и открыть ссылку заранее.'], ['Онлайн старт', 'Мы начали! 💻\n\nДобро пожаловать в прямой эфир. Задавайте вопросы спикерам в чате трансляции.']], ['Открыть эфир', 'Не смогу офлайн']),
-      postpromo: this.flowNodeData('9', 'Постпромо', 'Материалы', 3344, 942, [['После события', 'Спасибо, что были с нами ✨\n\nДелимся материалами и яркими моментами прошедшего мероприятия.']], ['Персональная ссылка на эфир', 'Подборка фото']),
       menu: this.flowNodeData('10', 'Главное меню', 'Навигация', 1488, 942, [['Главное меню', 'Выберите действие на клавиатуре ниже 🙂'], ['Соцсети', 'Мы рядом\n\nНовости, анонсы и материалы публикуем в канале и на сайте.']], ['Телеграм канал', 'Сайт', 'Ближайшие мероприятия']),
     };
   }
@@ -1733,9 +1742,6 @@ export class AdminController {
       ['offline_approved', 'reminders', 'Напоминания', 'bottom', 'top', [[2802, 858], [2802, 908], [3030, 908]], { labelSide: 'below' }],
       ['online_access', 'reminders', 'Напоминания'],
       ['reminders', 'online_access', 'Не смогу офлайн', 'bottom', 'bottom', [[3030, 1318], [2566, 1318]], { labelSide: 'below' }],
-      ['reminders', 'postpromo', 'После события'],
-      ['visited', 'postpromo', 'Материалы', 'bottom', 'top'],
-      ['postpromo', 'menu', 'Главное меню', 'bottom', 'bottom', [[3494, 1374], [1638, 1374]], { labelSide: 'below' }],
     ].map(([from, to, label, fromAnchor = 'right', toAnchor = 'left', via = [], options = {}]) => ({ from, to, label, fromAnchor, toAnchor, via, ...options }));
   }
 
@@ -1903,7 +1909,8 @@ export class AdminController {
        LIMIT 200`,
     );
     for (const row of rows) {
-      const stage = row.type === 'postpromo' ? 'postpromo' : 'reminders';
+      if (row.type === 'postpromo') continue;
+      const stage = 'reminders';
       let label = String(row.full_name || (row.username ? `@${row.username}` : 'ID')).trim();
       if (row.event_title) label += ` - ${row.event_title}`;
       queues[stage].push(label);

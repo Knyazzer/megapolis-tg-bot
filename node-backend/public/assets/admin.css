@@ -368,10 +368,71 @@ body.admin-page-broadcasts .main-content > .panel {
   min-height: 0;
 }
 
+.broadcast-form {
+  display: grid;
+  grid-template-columns: minmax(340px, 0.86fr) minmax(460px, 1.14fr);
+  gap: 18px;
+  align-items: stretch;
+}
+
+.broadcast-fields {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-width: 0;
+}
+
+.broadcast-fields textarea {
+  min-height: 140px;
+  max-height: 28vh;
+}
+
+.field-caption {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.broadcast-media-help {
+  display: grid;
+  gap: 8px;
+}
+
+.media-guide {
+  display: none;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #d9e0e8;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.media-guide.is-active {
+  display: grid;
+}
+
+.media-guide strong {
+  font-size: 13px;
+}
+
+.media-guide span,
+.media-guide li {
+  color: #475467;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.media-guide ol {
+  margin: 0;
+  padding-left: 18px;
+}
+
 .broadcast-preview {
   display: grid;
-  min-height: 150px;
-  max-height: 260px;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: min(560px, calc(100vh - 300px));
+  max-height: none;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -389,11 +450,17 @@ body.admin-page-broadcasts .main-content > .panel {
 
 .broadcast-preview-list {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   align-content: start;
   gap: 8px;
   min-height: 0;
   overflow: auto;
   padding: 10px;
+}
+
+.broadcast-preview-list > .empty,
+.broadcast-preview-list > .hint {
+  grid-column: 1 / -1;
 }
 
 .broadcast-recipient {
@@ -415,6 +482,10 @@ body.admin-page-broadcasts .main-content > .panel {
   font-size: 12px;
   font-style: normal;
   overflow-wrap: anywhere;
+}
+
+.broadcast-actions {
+  grid-column: 1 / -1;
 }
 
 .broadcast-history {
@@ -583,6 +654,14 @@ textarea {
   color: var(--text);
   font: inherit;
   background: #fff;
+}
+
+input:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+  background: #f2f4f7;
+  color: #98a2b3;
 }
 
 textarea {
@@ -2282,6 +2361,19 @@ body.admin-page:not(.admin-page-flow) .main-content > .simulator-workspace {
 
   .sim-chat-form {
     grid-template-columns: 1fr;
+  }
+
+  .broadcast-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .broadcast-preview {
+    min-height: 280px;
+    max-height: 42vh;
+  }
+
+  .broadcast-actions {
+    grid-column: auto;
   }
 
   .reception-row {

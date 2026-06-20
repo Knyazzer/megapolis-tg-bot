@@ -62,10 +62,12 @@ export class BotController {
     const text = String(message.text || '').trim();
     const state = String(person.state || 'new');
 
-    if (message.video_note && this.isAdminTelegramId(from.id)) {
-      const fileId = String(message.video_note.file_id || '');
-      await this.telegram.sendMessage(chatId, `File ID кружка:\n<code>${h(fileId)}</code>`);
-      return;
+    if (this.isAdminTelegramId(from.id)) {
+      const media = this.adminMediaFileId(message);
+      if (media) {
+        await this.telegram.sendMessage(chatId, `File ID ${h(media.label)}:\n<code>${h(media.fileId)}</code>\n\nВставьте это значение в поле «Медиа» в рассылке.`);
+        return;
+      }
     }
 
     if (this.isMainMenuText(text)) {
@@ -805,6 +807,25 @@ export class BotController {
 
   isAdminTelegramId(telegramId) {
     return config.telegram.adminIds.includes(String(telegramId));
+  }
+
+  adminMediaFileId(message) {
+    if (message.video_note?.file_id) {
+      return { label: 'кружка', fileId: String(message.video_note.file_id) };
+    }
+
+    if (message.video?.file_id) {
+      return { label: 'видео', fileId: String(message.video.file_id) };
+    }
+
+    if (Array.isArray(message.photo) && message.photo.length > 0) {
+      const photo = message.photo[message.photo.length - 1];
+      if (photo?.file_id) {
+        return { label: 'картинки', fileId: String(photo.file_id) };
+      }
+    }
+
+    return null;
   }
 
   consentText() {

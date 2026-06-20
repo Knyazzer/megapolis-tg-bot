@@ -503,6 +503,10 @@
   if (broadcastForm) {
     var audienceSelect = broadcastForm.querySelector('select[name="audience"]');
     var eventSelect = broadcastForm.querySelector('select[name="event_id"]');
+    var contentTypeSelect = broadcastForm.querySelector('select[name="content_type"]');
+    var bodyInput = broadcastForm.querySelector('textarea[name="body"]');
+    var mediaInput = broadcastForm.querySelector('[data-broadcast-media-input]');
+    var mediaGuides = broadcastForm.querySelectorAll('[data-media-guide]');
     var preview = document.querySelector('[data-broadcast-preview]');
     var previewCount = document.querySelector('[data-broadcast-preview-count]');
     var previewList = document.querySelector('[data-broadcast-preview-list]');
@@ -519,6 +523,40 @@
           "'": '&#039;',
         }[char];
       });
+    }
+
+    function syncBroadcastMediaGuide() {
+      var type = contentTypeSelect ? contentTypeSelect.value : 'text';
+      mediaGuides.forEach(function (guide) {
+        guide.classList.toggle('is-active', guide.getAttribute('data-media-guide') === type);
+      });
+
+      if (mediaInput) {
+        mediaInput.required = type !== 'text';
+        mediaInput.disabled = type === 'text';
+        if (type === 'photo') {
+          mediaInput.placeholder = 'https://site.ru/image.jpg или AgACAgIA...';
+        } else if (type === 'video') {
+          mediaInput.placeholder = 'https://site.ru/video.mp4 или BAACAgIA...';
+        } else if (type === 'video_note') {
+          mediaInput.placeholder = 'Telegram file_id кружка';
+        } else {
+          mediaInput.placeholder = 'Для текста оставьте пустым';
+        }
+      }
+
+      if (bodyInput) {
+        bodyInput.required = type === 'text';
+        if (type === 'video_note') {
+          bodyInput.placeholder = 'Текст, который уйдёт отдельным сообщением после кружка';
+        } else if (type === 'video') {
+          bodyInput.placeholder = 'Необязательная подпись к видео';
+        } else if (type === 'photo') {
+          bodyInput.placeholder = 'Необязательная подпись к картинке';
+        } else {
+          bodyInput.placeholder = '';
+        }
+      }
     }
 
     function setBroadcastSubmit(enabled) {
@@ -628,6 +666,10 @@
     if (eventSelect) {
       eventSelect.addEventListener('change', loadBroadcastPreview);
     }
+    if (contentTypeSelect) {
+      contentTypeSelect.addEventListener('change', syncBroadcastMediaGuide);
+    }
+    syncBroadcastMediaGuide();
     loadBroadcastPreview();
   }
 

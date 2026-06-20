@@ -93,8 +93,13 @@ async function processBroadcastMessages(telegram, limit) {
       if (row.content_type === 'video_note' && row.media_file_id) {
         await telegram.sendVideoNote(Number(row.telegram_id), String(row.media_file_id));
       } else if (row.content_type === 'photo' && row.media_file_id) {
-        await telegram.sendPhoto(Number(row.telegram_id), String(row.media_file_id), String(row.body || ''));
-        row.body = '';
+        const caption = telegramMediaCaption(row.body);
+        await telegram.sendPhoto(Number(row.telegram_id), String(row.media_file_id), caption);
+        if (caption) row.body = '';
+      } else if (row.content_type === 'video' && row.media_file_id) {
+        const caption = telegramMediaCaption(row.body);
+        await telegram.sendVideo(Number(row.telegram_id), String(row.media_file_id), caption);
+        if (caption) row.body = '';
       }
 
       if (String(row.body || '').trim() !== '') {
@@ -120,10 +125,19 @@ async function processBroadcastMessages(telegram, limit) {
   return { picked: rows.length, sent, failed };
 }
 
+function telegramMediaCaption(text) {
+  const caption = String(text || '').trim();
+  return caption.length > 0 && caption.length <= 900 ? caption : '';
+}
+
 function scheduledMessageIsStale(row) {
   const type = String(row.type || '');
   const attendance = String(row.attendance || '');
   const status = String(row.status || '');
+
+  if (type === 'postpromo') {
+    return true;
+  }
 
   if (row.archived_at) {
     return true;
@@ -139,10 +153,6 @@ function scheduledMessageIsStale(row) {
 
   if (type.startsWith('online_')) {
     return attendance !== 'online' || status !== 'approved';
-  }
-
-  if (type === 'postpromo') {
-    return !['approved', 'visited'].includes(status);
   }
 
   return false;
@@ -199,10 +209,6 @@ function scheduledMessagePayload(row) {
     ];
   }
 
-  if (row.type === 'postpromo') {
-    return [postpromoText(row), postpromoKeyboard(row, url)];
-  }
-
   return [`Напоминание о мероприятии: ${h(eventTitle)} в ${h(timeOnly(row.date_start))}`, {}];
 }
 
@@ -242,29 +248,6 @@ function onlineKeyboard(registrationId, url) {
     buttons.push([{ text: 'Персональная ссылка на эфир', url }]);
   }
   buttons.push([{ text: 'Напомнить доступ', callback_data: `credentials:${registrationId}` }]);
-  buttons.push([{ text: 'Главное меню', callback_data: 'main_menu' }]);
-
-  return { inline_keyboard: buttons };
-}
-
-function postpromoText(row) {
-  let text = '<b>Спасибо, что были с нами ✨</b>\n\nДелимся материалами и яркими моментами прошедшего мероприятия.';
-
-  if (row.recording_url) {
-    text += '\n\nТакже можно посмотреть запись эфира, если хочется вернуться к главным мыслям.';
-  }
-
-  return `${text}\n\n<b>Название:</b> ${h(row.title || '')}`;
-}
-
-function postpromoKeyboard(row, url) {
-  const buttons = [];
-  if (url) {
-    buttons.push([{ text: 'Персональная ссылка на эфир', url }]);
-  }
-  if (row.photo_album_url) {
-    buttons.push([{ text: 'Подборка фото', url: String(row.photo_album_url) }]);
-  }
   buttons.push([{ text: 'Главное меню', callback_data: 'main_menu' }]);
 
   return { inline_keyboard: buttons };

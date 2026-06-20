@@ -51,7 +51,7 @@ const REQUIRED_COLUMNS = [
   ['scheduled_messages', 'created_at', 'DATETIME NULL AFTER error'],
   ['scheduled_messages', 'updated_at', 'DATETIME NULL AFTER created_at'],
 
-  ['broadcast_campaigns', 'content_type', "ENUM('text','video_note','photo') NOT NULL DEFAULT 'text' AFTER event_id"],
+  ['broadcast_campaigns', 'content_type', "ENUM('text','video_note','photo','video') NOT NULL DEFAULT 'text' AFTER event_id"],
   ['broadcast_campaigns', 'body', 'TEXT NULL AFTER content_type'],
   ['broadcast_campaigns', 'media_file_id', 'VARCHAR(500) NULL AFTER body'],
   ['broadcast_campaigns', 'status', "ENUM('draft','queued','sending','sent','failed') NOT NULL DEFAULT 'queued' AFTER media_file_id"],
@@ -95,8 +95,8 @@ export async function migrateMysqlSchema() {
   await ensureEnumValue(
     'broadcast_campaigns',
     'content_type',
-    ['text', 'video_note', 'photo'],
-    "ALTER TABLE broadcast_campaigns MODIFY content_type ENUM('text','video_note','photo') NOT NULL DEFAULT 'text'",
+    ['text', 'video_note', 'photo', 'video'],
+    "ALTER TABLE broadcast_campaigns MODIFY content_type ENUM('text','video_note','photo','video') NOT NULL DEFAULT 'text'",
   );
 
   for (const [table, indexName, sql] of REQUIRED_INDEXES) {
@@ -131,7 +131,7 @@ export async function mysqlSchemaDiagnostics() {
   if (!(await enumHasValues('registrations', 'status', ['visited', 'no_show']))) {
     enumIssues.push('registrations.status');
   }
-  if (!(await enumHasValues('broadcast_campaigns', 'content_type', ['photo']))) {
+  if (!(await enumHasValues('broadcast_campaigns', 'content_type', ['photo', 'video']))) {
     enumIssues.push('broadcast_campaigns.content_type');
   }
 

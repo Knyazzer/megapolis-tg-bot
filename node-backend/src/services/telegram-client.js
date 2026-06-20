@@ -74,6 +74,25 @@ export class TelegramClient {
     return this.api('sendPhoto', payload);
   }
 
+  async sendVideo(chatId, video, caption = '', replyMarkup = {}, extra = {}) {
+    const payload = {
+      chat_id: chatId,
+      video,
+      parse_mode: 'HTML',
+      ...extra,
+    };
+
+    if (caption) {
+      payload.caption = caption;
+    }
+
+    if (Object.keys(replyMarkup).length > 0) {
+      payload.reply_markup = replyMarkup;
+    }
+
+    return this.api('sendVideo', payload);
+  }
+
   async sendVideoNote(chatId, videoNote, replyMarkup = {}, extra = {}) {
     const payload = {
       chat_id: chatId,
