@@ -504,6 +504,24 @@
     messagesFeed.scrollTop = messagesFeed.scrollHeight;
   }
 
+  document.querySelectorAll('.direct-message-form').forEach(function (form) {
+    form.addEventListener('submit', function (event) {
+      var text = form.querySelector('textarea[name="text"]');
+      var file = form.querySelector('input[type="file"]');
+      var hasText = Boolean(text && String(text.value || '').trim());
+      var hasFile = Boolean(file && file.files && file.files.length > 0);
+      if (!hasText && !hasFile) {
+        event.preventDefault();
+        window.alert('Напишите сообщение или прикрепите картинку.');
+        return;
+      }
+      if (hasFile && text && String(text.value || '').trim().length > 900) {
+        event.preventDefault();
+        window.alert('Подпись к картинке должна быть до 900 символов.');
+      }
+    });
+  });
+
   var broadcastForm = document.querySelector('form[data-broadcast-form]');
   if (broadcastForm) {
     var audienceSelect = broadcastForm.querySelector('select[name="audience"]');

@@ -73,6 +73,10 @@ export class BotController {
       }
     }
 
+    if (this.isHumanChatMode(person)) {
+      return;
+    }
+
     if (this.isMainMenuText(text)) {
       await this.sendWelcomeOrMenu(chatId, person);
       return;
@@ -838,6 +842,7 @@ export class BotController {
         telegramId: chatId,
         messageType: this.chatMessageType(message),
         text: this.chatMessageText(message),
+        ...this.chatMessageMedia(message),
       });
     } catch (error) {
       logger.warn('failed to record incoming chat message', { personId: person.id, message: error.message });
@@ -867,6 +872,55 @@ export class BotController {
     if (message.document) return caption || `Файл: ${message.document.file_name || ''}`.trim();
     if (message.voice) return caption || 'Голосовое сообщение';
     return 'Сообщение без текста';
+  }
+
+  chatMessageMedia(message) {
+    if (message.video_note?.file_id) {
+      return {
+        mediaFileId: String(message.video_note.file_id),
+        mediaName: 'video_note.mp4',
+        mediaMime: 'video/mp4',
+      };
+    }
+
+    if (message.video?.file_id) {
+      return {
+        mediaFileId: String(message.video.file_id),
+        mediaName: message.video.file_name || 'video.mp4',
+        mediaMime: message.video.mime_type || 'video/mp4',
+      };
+    }
+
+    if (Array.isArray(message.photo) && message.photo.length > 0) {
+      const photo = message.photo[message.photo.length - 1];
+      return {
+        mediaFileId: String(photo.file_id || ''),
+        mediaName: 'photo.jpg',
+        mediaMime: 'image/jpeg',
+      };
+    }
+
+    if (message.document?.file_id) {
+      return {
+        mediaFileId: String(message.document.file_id),
+        mediaName: message.document.file_name || 'document',
+        mediaMime: message.document.mime_type || 'application/octet-stream',
+      };
+    }
+
+    if (message.voice?.file_id) {
+      return {
+        mediaFileId: String(message.voice.file_id),
+        mediaName: 'voice.ogg',
+        mediaMime: message.voice.mime_type || 'audio/ogg',
+      };
+    }
+
+    return {};
+  }
+
+  isHumanChatMode(person) {
+    return String(person.chat_mode || 'bot') === 'human';
   }
 
   consentText() {
