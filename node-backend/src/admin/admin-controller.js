@@ -592,8 +592,9 @@ export class AdminController {
       return `${body}</tbody></table></div></section>`;
     }
 
-    body += '<div class="broadcast-compose"><div class="panel-head"><h2>Новая рассылка</h2><span class="muted">Выберите аудиторию и проверьте получателей</span></div><form method="post" class="form-grid" data-broadcast-form>';
+    body += '<div class="broadcast-compose"><div class="panel-head"><h2>Новая рассылка</h2><span class="muted">Выберите аудиторию и проверьте получателей</span></div><form method="post" class="form-grid broadcast-form" data-broadcast-form>';
     body += `${csrfField(this.session)}<input type="hidden" name="action" value="create_broadcast"><input type="hidden" name="_return" value="/?page=broadcasts&tab=history">`;
+    body += '<div class="broadcast-fields">';
     body += this.input('Название рассылки', 'title', '', true);
     body += '<label>Аудитория<select name="audience" required>';
     for (const [key, label] of Object.entries(this.audiences())) {
@@ -601,12 +602,17 @@ export class AdminController {
     }
     body += '</select></label><label>Мероприятие<select name="event_id"><option value="0">Не привязывать</option>';
     for (const event of events) body += `<option value="${Number(event.id)}">${h(`${event.title} - ${dateShort(event.date_start)}`)}</option>`;
-    body += '</select></label><label>Тип<select name="content_type"><option value="text">Текст</option><option value="photo">Картинка + текст</option><option value="video_note">Кружок + текст</option></select></label>';
+    body += '</select></label><label>Тип<select name="content_type"><option value="text">Текст</option><option value="photo">Картинка</option><option value="video">Видео</option><option value="video_note">Кружок / видео-сообщение</option></select></label>';
     body += this.textarea('Текст сообщения', 'body', '');
-    body += this.input('Telegram file_id или URL медиа', 'media_file_id', '');
-    body += '<p class="hint">Для картинки можно вставить HTTPS-ссылку или Telegram file_id. Для кружка нужен именно file_id: отправьте кружок боту от Telegram ID, указанного в ADMIN_TELEGRAM_IDS.</p>';
-    body += '<div class="broadcast-preview" data-broadcast-preview><div class="broadcast-preview-head"><strong>Получатели</strong><span class="muted" data-broadcast-preview-count>Загрузка...</span></div><div class="broadcast-preview-list" data-broadcast-preview-list></div></div>';
-    body += '<div class="actions"><button class="button button-primary" type="submit">Поставить в очередь</button><a class="button muted-button" href="/?page=broadcasts&tab=history">Открыть историю</a></div></form></div></section>';
+    body += '<label class="broadcast-media-field">Медиа<span class="field-caption">HTTPS-ссылка на медиа или Telegram file_id</span><input type="text" name="media_file_id" value="" data-broadcast-media-input placeholder="Для текста оставьте пустым"></label>';
+    body += '<div class="broadcast-media-help" data-broadcast-media-help>';
+    body += '<div class="media-guide is-active" data-media-guide="text"><strong>Текстовая рассылка</strong><span>Заполните только текст сообщения. Поле медиа можно оставить пустым.</span></div>';
+    body += '<div class="media-guide" data-media-guide="photo"><strong>Картинка</strong><ol><li>Выберите тип «Картинка».</li><li>В поле «Медиа» вставьте HTTPS-ссылку на изображение или Telegram file_id.</li><li>Чтобы получить file_id, отправьте картинку боту с аккаунта модератора.</li><li>Текст можно оставить пустым. Если заполнить, он уйдёт подписью под картинкой.</li></ol></div>';
+    body += '<div class="media-guide" data-media-guide="video"><strong>Видео</strong><ol><li>Выберите тип «Видео».</li><li>В поле «Медиа» вставьте HTTPS-ссылку на mp4-файл или Telegram file_id.</li><li>Чтобы получить file_id, отправьте видео боту с аккаунта модератора.</li><li>Текст можно оставить пустым. Если заполнить, он уйдёт подписью под видео.</li></ol></div>';
+    body += '<div class="media-guide" data-media-guide="video_note"><strong>Кружок в Telegram</strong><ol><li>Отправьте кружок вашему боту с аккаунта модератора.</li><li>Бот вернёт Telegram file_id — вставьте его в поле «Медиа».</li><li>Кружок уйдёт отдельным сообщением, текст отправится следом.</li></ol></div>';
+    body += '</div></div>';
+    body += '<aside class="broadcast-preview" data-broadcast-preview><div class="broadcast-preview-head"><strong>Получатели</strong><span class="muted" data-broadcast-preview-count>Загрузка...</span></div><div class="broadcast-preview-list" data-broadcast-preview-list></div></aside>';
+    body += '<div class="actions broadcast-actions"><button class="button button-primary" type="submit">Поставить в очередь</button><a class="button muted-button" href="/?page=broadcasts&tab=history">Открыть историю</a></div></form></div></section>';
     return body;
   }
 
@@ -886,42 +892,78 @@ export class AdminController {
     const title = String(form.title || '').trim();
     const audience = String(form.audience || '');
     const eventId = Number(form.event_id || 0);
-    const contentType = ['video_note', 'photo'].includes(form.content_type) ? form.content_type : 'text';
+    const contentType = ['video_note', 'photo', 'video'].includes(form.content_type) ? form.content_type : 'text';
     const body = String(form.body || '').trim();
-    const mediaFileId = String(form.media_file_id || '').trim();
-    if (!title || (!body && !mediaFileId)) throw new Error('Заполните название и текст или file_id');
+    const mediaFileId = contentType === 'text' ? '' : String(form.media_file_id || '').trim();
+    if (!title) throw new Error('Заполните название рассылки');
+    if (contentType === 'text' && !body) throw new Error('Для текстовой рассылки заполните текст сообщения');
+    if (contentType !== 'text' && !mediaFileId) throw new Error('Для медиа-рассылки добавьте HTTPS-ссылку или Telegram file_id');
 
     const recipients = await this.broadcastRecipients(audience, eventId);
     if (recipients.length === 0) {
       throw new Error('По выбранной аудитории нет получателей');
     }
     await withTransaction(async (tx) => {
-      const inserted = await tx.execute(
-        `INSERT INTO broadcast_campaigns
-         (title, audience, event_id, content_type, body, media_file_id, status, created_at, updated_at)
-         VALUES (:title, :audience, :eventId, :contentType, :body, :mediaFileId, 'queued', :now, :now)`,
-        {
-          title,
-          audience,
-          eventId: eventId > 0 ? eventId : null,
-          contentType,
-          body,
-          mediaFileId,
-          now: nowSql(),
-        },
-      );
-      for (const recipient of recipients) {
-        await tx.execute(
-          `${isSqlite() ? 'INSERT OR IGNORE' : 'INSERT IGNORE'} INTO broadcast_messages
-           (campaign_id, person_id, telegram_id, status, created_at, updated_at)
-           VALUES (:campaignId, :personId, :telegramId, 'queued', :now, :now)`,
-          {
-            campaignId: inserted.insertId,
-            personId: recipient.id,
-            telegramId: recipient.telegram_id,
-            now: nowSql(),
-          },
+      const createdAt = nowSql();
+      const campaignValues = {
+        title,
+        audience,
+        eventId: eventId > 0 ? eventId : null,
+        contentType,
+        body: body || null,
+        mediaFileId: mediaFileId || null,
+        now: createdAt,
+      };
+      const inserted = isSqlite()
+        ? await tx.execute(
+          `INSERT INTO broadcast_campaigns
+           (title, audience, event_id, content_type, body, media_file_id, status, created_at, updated_at)
+           VALUES (:title, :audience, :eventId, :contentType, :body, :mediaFileId, 'queued', :now, :now)`,
+          campaignValues,
+        )
+        : await tx.execute(
+          `INSERT INTO broadcast_campaigns
+           (title, audience, event_id, content_type, body, media_file_id, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+          [
+            campaignValues.title,
+            campaignValues.audience,
+            campaignValues.eventId,
+            campaignValues.contentType,
+            campaignValues.body,
+            campaignValues.mediaFileId,
+            campaignValues.now,
+            campaignValues.now,
+          ],
         );
+      const campaignId = Number(inserted.insertId || 0);
+      if (campaignId <= 0) {
+        throw new Error('Не удалось создать кампанию рассылки');
+      }
+
+      for (const recipient of recipients) {
+        const personId = Number(recipient.id || 0);
+        const telegramId = String(recipient.telegram_id || '').trim();
+        if (personId <= 0 || !telegramId) {
+          throw new Error('В аудитории есть получатель без Telegram ID');
+        }
+
+        const queuedAt = nowSql();
+        if (isSqlite()) {
+          await tx.execute(
+            `INSERT OR IGNORE INTO broadcast_messages
+             (campaign_id, person_id, telegram_id, status, created_at, updated_at)
+             VALUES (:campaignId, :personId, :telegramId, 'queued', :now, :now)`,
+            { campaignId, personId, telegramId, now: queuedAt },
+          );
+        } else {
+          await tx.execute(
+            `INSERT IGNORE INTO broadcast_messages
+             (campaign_id, person_id, telegram_id, status, created_at, updated_at)
+             VALUES (?, ?, ?, 'queued', ?, ?)`,
+            [campaignId, personId, telegramId, queuedAt, queuedAt],
+          );
+        }
       }
     });
     this.flash(`Рассылка поставлена в очередь: ${recipients.length} получателей`);
@@ -1043,14 +1085,14 @@ export class AdminController {
   }
 
   async sendOfflineApproved(row) {
-    const text = 'Готово, офлайн-участие подтверждено 🏢\n\n'
+    const text = '<b>Офлайн-участие подтверждено 🏢</b>\n\n'
       + 'Ждём вас на мероприятии:\n'
       + `<b>Название:</b> ${h(row.title)}\n`
       + `<b>Дата:</b> ${h(dateShort(row.date_start))}\n`
       + `<b>Время:</b> ${h(timeRange(row.date_start, row.date_end))}\n`
       + `<b>Наш адрес:</b> ${h(row.address || '')}\n`
       + '<b>Формат:</b> офлайн\n\n'
-      + 'Перед событием пришлём напоминание.';
+      + 'Перед событием пришлём напоминание. Маршрут держим под рукой, хорошее настроение тоже.';
     await this.telegram.sendMessage(Number(row.telegram_id), text);
     if (row.venue_lat !== null && row.venue_lng !== null) {
       await this.telegram.sendVenue(Number(row.telegram_id), Number(row.venue_lat), Number(row.venue_lng), 'Мегаполис Медиа', String(row.address || ''));
@@ -1061,14 +1103,14 @@ export class AdminController {
     if (!eventSupportsOnline(row)) {
       await this.telegram.sendMessage(
         Number(row.telegram_id),
-        'К сожалению, сейчас не можем подтвердить офлайн-участие. Если появится альтернативный формат или новые места, мы сообщим.',
+        '<b>К сожалению, сейчас не можем подтвердить офлайн-участие.</b>\n\nЕсли появится альтернативный формат или новые места, мы сообщим.',
         this.mainMenuKeyboard(),
       );
       return;
     }
     await this.telegram.sendMessage(
       Number(row.telegram_id),
-      'К сожалению, сейчас не можем подтвердить офлайн-участие, но вы можете присоединиться онлайн. Так вы точно не пропустите эфир 💻',
+      '<b>К сожалению, сейчас не можем подтвердить офлайн-участие.</b>\n\nНо вы можете присоединиться онлайн, так вы точно не пропустите эфир 💻',
       { inline_keyboard: [[{ text: 'Буду смотреть онлайн', callback_data: `reg_online:${row.event_id}` }]] },
     );
   }
@@ -1216,9 +1258,12 @@ export class AdminController {
   registrationCard(row) {
     const attendance = row.attendance === 'offline' ? 'офлайн' : 'онлайн';
     const attendanceClass = row.attendance === 'offline' ? 'offline' : 'online';
+    const hasBackupOnlineAccess = row.attendance === 'offline' && String(row.facecast_url || '').trim();
     const state = this.registrationState(row);
     let body = `<article class="registration-card ${row.archived_at ? 'is-archived' : ''}" data-registration-card data-registration-id="${Number(row.id)}" data-status="${h(state)}" data-created-at="${h(row.created_at || '')}">`;
-    body += `<div class="card-top"><span class="format-pill ${attendanceClass}">${h(attendance)}</span><span class="muted">${h(this.dateTime(row.created_at))}</span></div>`;
+    body += `<div class="card-top"><span class="format-pill ${attendanceClass}">${h(attendance)}</span>`;
+    if (hasBackupOnlineAccess) body += '<span class="format-pill online">онлайн-доступ</span>';
+    body += `<span class="muted">${h(this.dateTime(row.created_at))}</span></div>`;
     body += `<h3>${h(row.full_name)}</h3><p class="card-company">${h(row.company)}</p>`;
     if (row.position_title) body += `<p class="muted">${h(row.position_title)}</p>`;
     body += `<dl><div><dt>Событие</dt><dd>${h(row.title)}</dd></div><div><dt>Телефон</dt><dd>${h(row.phone)}</dd></div><div><dt>Email</dt><dd>${h(row.email)}</dd></div></dl>`;
@@ -1240,9 +1285,12 @@ export class AdminController {
 
   registrationTableRow(row, withActions) {
     const attendance = row.attendance === 'offline' ? 'офлайн' : 'онлайн';
+    const attendanceDetails = row.attendance === 'offline' && String(row.facecast_url || '').trim()
+      ? `${h(attendance)}<div class="muted">есть онлайн-доступ</div>`
+      : h(attendance);
     const state = this.registrationState(row);
     let body = `<tr data-registration-row data-registration-id="${Number(row.id)}" data-status="${h(state)}" data-created-at="${h(row.created_at || '')}"><td><strong>${h(row.full_name)}</strong><div class="muted">${h(row.company)}</div><div class="muted">${h(row.email)}</div></td>`;
-    body += `<td>${h(row.title)}</td><td>${h(attendance)}</td><td>${this.registrationStatusLabel(row)}</td><td>${h(this.dateTime(row.created_at))}</td>`;
+    body += `<td>${h(row.title)}</td><td>${attendanceDetails}</td><td>${this.registrationStatusLabel(row)}</td><td>${h(this.dateTime(row.created_at))}</td>`;
     if (withActions) body += `<td class="actions-cell">${this.registrationActions(row)}</td>`;
     return `${body}</tr>`;
   }
@@ -1458,6 +1506,8 @@ export class AdminController {
       body += '<span class="sim-kind">Карта</span>';
     } else if (message.type === 'photo') {
       body += '<span class="sim-kind">Картинка</span>';
+    } else if (message.type === 'video') {
+      body += '<span class="sim-kind">Видео</span>';
     } else if (message.type === 'video_note') {
       body += '<span class="sim-kind">Кружок</span>';
     } else if (message.type === 'button') {
@@ -1635,7 +1685,7 @@ export class AdminController {
     const lanes = [
       ['Общий путь регистрации', 116, 356],
       ['Офлайн-гости и ресепшн', 510, 356],
-      ['Онлайн, напоминания и материалы', 904, 516],
+      ['Онлайн и напоминания', 904, 516],
     ];
     const columns = [
       ['Старт', 96],
@@ -1645,7 +1695,7 @@ export class AdminController {
       ['Выбор формата', 1952],
       ['Подтверждение', 2416],
       ['День события', 2880],
-      ['Материалы', 3344],
+      ['Посещение', 3344],
     ];
     let body = '<div class="flow-scaffold" aria-hidden="true">';
     for (const [title, top, height] of lanes) body += `<div class="flow-lane" style="top:${top}px;height:${height}px;"><span>${h(title)}</span></div>`;
@@ -1655,20 +1705,19 @@ export class AdminController {
 
   flowNodes() {
     return {
-      start: this.flowNodeData('1', 'Первое касание', 'Бот', 96, 154, [['/start', 'Здравствуйте! Это бот Мегаполис Медиа 👋\n\nЗдесь можно зарегистрироваться на наши митапы, эфиры и деловые встречи.\n\nДавайте познакомимся, чтобы мы могли корректно оформить вашу регистрацию.']], ['Зарегистрироваться', 'Главное меню']),
-      consent: this.flowNodeData('2', 'Согласие', 'Данные', 560, 154, [['Перед анкетой', `Перед регистрацией нужно согласие на обработку персональных данных.\n\nМы будем использовать ФИО, компанию, должность, телефон и email для регистрации на мероприятия, коммуникации, допуска к эфиру и отправки материалов.\n\nПолный текст: ${config.links.privacy}`]], ['Даю согласие', 'Главное меню']),
-      profile: this.flowNodeData('3', 'Анкета', 'Данные', 1024, 154, [['Имя', 'Спасибо! Давайте познакомимся 🙂 Напишите, пожалуйста, имя и фамилию.'], ['Компания', 'Из какой вы компании?'], ['Должность', 'А какая у вас должность?'], ['Телефон', 'Поделитесь, пожалуйста, номером телефона. Можно отправить его кнопкой ниже.'], ['Email', 'И последний шаг: напишите вашу почту.'], ['Финал анкеты', 'Готово, спасибо! Теперь можно выбрать мероприятие ✨']], ['Ответ текстом', 'Отправить телефон']),
-      events: this.flowNodeData('4', 'Выбор мероприятия', 'Регистрация', 1488, 154, [['Список событий', 'Выберите мероприятие, на которое хотите зарегистрироваться.\n\nАдрес на этом шаге не показываем: человек сначала выбирает событие.'], ['Если событий нет', 'Пока ближайших мероприятий нет. Как только появится новое событие, мы обязательно расскажем 🙂']], ['Выбрать событие', 'Главное меню']),
-      format_choice: this.flowNodeData('5', 'Выбор формата', 'Регистрация', 1952, 154, [['После выбора события', 'Отлично, вот что запланировано:\n\nНазвание: {название}\nДата: {дата}\nВремя: {время}\nФормат: {офлайн + онлайн / только офлайн / только онлайн}\n\n{описание мероприятия}\n\nВыберите удобный формат участия:']], ['Прийти офлайн', 'Смотреть онлайн', 'Главное меню']),
-      offline_pending: this.flowNodeData('6A', 'Офлайн на проверке', 'Модерация', 2416, 154, [['После выбора офлайна', 'Спасибо, заявка на офлайн-участие принята 🏢\n\nОрганизаторы проверят список гостей и пришлют подтверждение. Адрес и детали площадки отправим после подтверждения участия.']], ['Модератор: подтвердить', 'Модератор: отказ']),
-      offline_rejected: this.flowNodeData('6A-', 'Офлайн отказ', 'Модерация', 2880, 154, [['Отказ модератора', 'К сожалению, сейчас не можем подтвердить офлайн-участие, но вы можете присоединиться онлайн. Так вы точно не пропустите эфир 💻']], ['Буду смотреть онлайн']),
-      offline_approved: this.flowNodeData('7A', 'Офлайн подтвержден', 'Офлайн', 2416, 548, [['Подтверждение модератора', 'Готово, офлайн-участие подтверждено 🏢\n\nЖдём вас на мероприятии:\nНазвание: {название}\nДата: {дата}\nВремя: {время}\nНаш адрес: {адрес}\nФормат: офлайн\n\nПеред событием пришлём напоминание.'], ['Если есть координаты', 'После сообщения бот отправляет venue-карту с адресом площадки.']], ['Ресепшн', 'Напоминания']),
+      start: this.flowNodeData('1', 'Первое касание', 'Бот', 96, 154, [['/start', 'Мегаполис Медиа на связи 👋\n\nЗдесь можно зарегистрироваться на митапы, эфиры и деловые встречи.\n\nСначала коротко познакомимся: это нужно для регистрации, допуска к эфиру и связи с вами. Анкета без марафона, обещаем 🙂']], ['Зарегистрироваться', 'Главное меню']),
+      consent: this.flowNodeData('2', 'Согласие', 'Данные', 560, 154, [['Перед анкетой', `Согласие на обработку персональных данных\n\nМы будем использовать ФИО, компанию, должность, телефон и email для регистрации на мероприятия, коммуникации, допуска к эфиру и отправки материалов.\n\nПолный текст: ${config.links.privacy}`]], ['Даю согласие', 'Главное меню']),
+      profile: this.flowNodeData('3', 'Анкета', 'Данные', 1024, 154, [['Имя', 'Спасибо! Давайте познакомимся 🙂 Напишите, пожалуйста, имя и фамилию.'], ['Компания', 'Шаг 2 из 5\n\nИз какой вы компании?'], ['Должность', 'Шаг 3 из 5\n\nА какая у вас должность?'], ['Телефон', 'Шаг 4 из 5\n\nПоделитесь, пожалуйста, номером телефона. Можно отправить его кнопкой ниже.'], ['Email', 'Шаг 5 из 5\n\nИ последний шаг: напишите вашу почту.'], ['Финал анкеты', 'Готово, спасибо! ✨\n\nАнкета собрана. Теперь можно выбрать мероприятие.']], ['Ответ текстом', 'Отправить телефон']),
+      events: this.flowNodeData('4', 'Выбор мероприятия', 'Регистрация', 1488, 154, [['Список событий', 'Ближайшие мероприятия\n\nВыберите событие, на которое хотите зарегистрироваться.\n\nАдрес на этом шаге не показываем: человек сначала выбирает событие.'], ['Если событий нет', 'Пока ближайших мероприятий нет.\n\nКак только появится новое событие, мы обязательно расскажем 🙂']], ['Выбрать событие', 'Главное меню']),
+      format_choice: this.flowNodeData('5', 'Выбор формата', 'Регистрация', 1952, 154, [['После выбора события', 'Отлично, вот что запланировано\n\nНазвание: {название}\nДата: {дата}\nВремя: {время}\nФормат: {офлайн + онлайн / только офлайн / только онлайн}\n\n{описание мероприятия}\n\nВыберите удобный формат участия:']], ['Прийти офлайн', 'Смотреть онлайн', 'Главное меню']),
+      offline_pending: this.flowNodeData('6A', 'Офлайн на проверке', 'Модерация', 2416, 154, [['После выбора офлайна', 'Заявка на офлайн-участие принята 🏢\n\nОрганизаторы проверят список гостей и пришлют подтверждение.\n\nАдрес и детали площадки отправим после подтверждения участия, чтобы у вас не было лишних квестов с навигацией раньше времени.']], ['Модератор: подтвердить', 'Модератор: отказ']),
+      offline_rejected: this.flowNodeData('6A-', 'Офлайн отказ', 'Модерация', 2880, 154, [['Отказ модератора', 'К сожалению, сейчас не можем подтвердить офлайн-участие.\n\nНо вы можете присоединиться онлайн, так вы точно не пропустите эфир 💻']], ['Буду смотреть онлайн']),
+      offline_approved: this.flowNodeData('7A', 'Офлайн подтвержден', 'Офлайн', 2416, 548, [['Подтверждение модератора', 'Офлайн-участие подтверждено 🏢\n\nЖдём вас на мероприятии:\nНазвание: {название}\nДата: {дата}\nВремя: {время}\nНаш адрес: {адрес}\nФормат: офлайн\n\nПеред событием пришлём напоминание. Маршрут держим под рукой, хорошее настроение тоже.'], ['Если есть координаты', 'После сообщения бот отправляет venue-карту с адресом площадки.']], ['Ресепшн', 'Напоминания']),
       reception: this.flowNodeData('7B', 'Ресепшн', 'Офлайн', 2880, 548, [['Системное действие', 'Пользователю сообщение не отправляется. Модератор на ресепшне ставит галочку в админке.']], ['Отметить приход']),
-      visited: this.flowNodeData('7C', 'Пришел', 'Офлайн', 3344, 548, [['Системное действие', 'Статус нужен для отчетности и дальнейшей рассылки материалов.']], ['Постпромо']),
-      online_access: this.flowNodeData('6B', 'Онлайн зарегистрирован', 'Онлайн', 2416, 942, [['Доступ к эфиру', 'Готово, вы зарегистрированы онлайн! 💻\n\nПерсональная ссылка на просмотр будет в кнопке ниже.\nНазвание: {название}\nДата: {дата}\nВремя подключения: {время старта онлайна}\n\nСохраните сообщение, а перед эфиром мы напомним о старте.']], ['Персональная ссылка на эфир', 'Напомнить доступ']),
-      reminders: this.flowNodeData('8', 'Напоминания', 'Автоматизация', 2880, 942, [['Офлайн за день', 'Напоминаем о встрече завтра 🏢'], ['Офлайн за 2 часа', 'До офлайн-встречи осталось около двух часов 🙂'], ['Онлайн за 15 минут', 'Напоминаем про эфир: начинаем через 15 минут 💻'], ['Онлайн старт', 'Мы начали! Добро пожаловать в прямой эфир 💻']], ['Открыть эфир', 'Не смогу офлайн']),
-      postpromo: this.flowNodeData('9', 'Постпромо', 'Материалы', 3344, 942, [['После события', 'Спасибо, что были с нами ✨\n\nДелимся материалами и яркими моментами прошедшего мероприятия.']], ['Персональная ссылка на эфир', 'Подборка фото']),
-      menu: this.flowNodeData('10', 'Главное меню', 'Навигация', 1488, 942, [['Главное меню', 'Что посмотрим дальше? Мы рядом в соцсетях и на сайте 🙂']], ['Телеграм канал', 'Сайт', 'Ближайшие мероприятия']),
+      visited: this.flowNodeData('7C', 'Пришел', 'Офлайн', 3344, 548, [['Системное действие', 'Статус нужен для отчетности. Материалы после события отправляем вручную через раздел рассылок.']], []),
+      online_access: this.flowNodeData('6B', 'Онлайн / запасной доступ', 'Онлайн', 2416, 942, [['Доступ к эфиру', 'Готово, вы зарегистрированы онлайн! 💻\n\nПерсональная ссылка на просмотр будет в кнопке ниже.\nНазвание: {название}\nДата: {дата}\nВремя подключения: {время старта онлайна}\n\nСохраните сообщение, а перед эфиром мы напомним о старте.'], ['Если уже есть офлайн', 'Вы остаётесь в списке офлайн-гостей 🏢\n\nЗапасная персональная ссылка на эфир будет в кнопке ниже.\n\nГлавным вариантом оставляем офлайн-встречу, а ссылку держите как запасной доступ.']], ['Персональная ссылка на эфир', 'Напомнить доступ']),
+      reminders: this.flowNodeData('8', 'Напоминания', 'Автоматизация', 2880, 942, [['Офлайн за день', 'Напоминаем о встрече завтра 🏢'], ['Офлайн за 2 часа', 'До офлайн-встречи осталось около двух часов 🙂\n\nЛучше прийти спокойно, чем соревноваться с городским трафиком.'], ['Онлайн за 15 минут', 'Напоминаем про эфир 💻\n\nНачинаем через 15 минут. Можно налить чай и открыть ссылку заранее.'], ['Онлайн старт', 'Мы начали! 💻\n\nДобро пожаловать в прямой эфир. Задавайте вопросы спикерам в чате трансляции.']], ['Открыть эфир', 'Не смогу офлайн']),
+      menu: this.flowNodeData('10', 'Главное меню', 'Навигация', 1488, 942, [['Главное меню', 'Выберите действие на клавиатуре ниже 🙂'], ['Соцсети', 'Мы рядом\n\nНовости, анонсы и материалы публикуем в канале и на сайте.']], ['Телеграм канал', 'Сайт', 'Ближайшие мероприятия']),
     };
   }
 
@@ -1693,9 +1742,6 @@ export class AdminController {
       ['offline_approved', 'reminders', 'Напоминания', 'bottom', 'top', [[2802, 858], [2802, 908], [3030, 908]], { labelSide: 'below' }],
       ['online_access', 'reminders', 'Напоминания'],
       ['reminders', 'online_access', 'Не смогу офлайн', 'bottom', 'bottom', [[3030, 1318], [2566, 1318]], { labelSide: 'below' }],
-      ['reminders', 'postpromo', 'После события'],
-      ['visited', 'postpromo', 'Материалы', 'bottom', 'top'],
-      ['postpromo', 'menu', 'Главное меню', 'bottom', 'bottom', [[3494, 1374], [1638, 1374]], { labelSide: 'below' }],
     ].map(([from, to, label, fromAnchor = 'right', toAnchor = 'left', via = [], options = {}]) => ({ from, to, label, fromAnchor, toAnchor, via, ...options }));
   }
 
@@ -1863,7 +1909,8 @@ export class AdminController {
        LIMIT 200`,
     );
     for (const row of rows) {
-      const stage = row.type === 'postpromo' ? 'postpromo' : 'reminders';
+      if (row.type === 'postpromo') continue;
+      const stage = 'reminders';
       let label = String(row.full_name || (row.username ? `@${row.username}` : 'ID')).trim();
       if (row.event_title) label += ` - ${row.event_title}`;
       queues[stage].push(label);

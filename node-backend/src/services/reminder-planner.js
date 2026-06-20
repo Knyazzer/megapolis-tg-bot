@@ -3,6 +3,7 @@ import { formatSqlDate, nowSql, parseDate, shiftDate } from '../utils/dates.js';
 
 const OFFLINE_TYPES = ['offline_1day', 'offline_2hours', 'offline_started'];
 const ONLINE_TYPES = ['online_15min', 'online_started'];
+// Keep legacy postpromo here so cancellations also close old queued records.
 const ALL_TYPES = [...OFFLINE_TYPES, ...ONLINE_TYPES, 'postpromo'];
 
 export class ReminderPlanner {
@@ -11,14 +12,12 @@ export class ReminderPlanner {
     const onlineStart = event.online_start || event.date_start;
     await this.schedule(registration, event, 'online_15min', shiftDate(onlineStart, -15 * 60 * 1000));
     await this.schedule(registration, event, 'online_started', parseDate(onlineStart));
-    await this.schedule(registration, event, 'postpromo', shiftDate(event.date_end, 60 * 60 * 1000));
   }
 
   async planOfflineApproved(registration, event) {
     await this.schedule(registration, event, 'offline_1day', shiftDate(event.date_start, -24 * 60 * 60 * 1000));
     await this.schedule(registration, event, 'offline_2hours', shiftDate(event.date_start, -2 * 60 * 60 * 1000));
     await this.schedule(registration, event, 'offline_started', parseDate(event.date_start));
-    await this.schedule(registration, event, 'postpromo', shiftDate(event.date_end, 60 * 60 * 1000));
   }
 
   async cancelOffline(registration) {

@@ -52,6 +52,21 @@ export class SimulatorTelegramClient {
     return ok();
   }
 
+  async sendVideo(chatId, video, caption = '', replyMarkup = {}, extra = {}) {
+    if (!this.shouldCapture(chatId)) {
+      return this.fallback?.sendVideo(chatId, video, caption, replyMarkup, extra) || ok();
+    }
+
+    this.push({
+      direction: 'bot',
+      type: 'video',
+      text: caption || 'Видео',
+      media: String(video || ''),
+      replyMarkup,
+    });
+    return ok();
+  }
+
   async sendVideoNote(chatId, videoNote, replyMarkup = {}, extra = {}) {
     if (!this.shouldCapture(chatId)) {
       return this.fallback?.sendVideoNote(chatId, videoNote, replyMarkup, extra) || ok();
