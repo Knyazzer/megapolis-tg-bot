@@ -1970,14 +1970,17 @@ export class AdminController {
 
   datetimeLocal(value) {
     if (!value) return '';
-    const date = parseDate(value);
-    const pad = (part) => String(part).padStart(2, '0');
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    return formatSqlDate(parseDate(value)).slice(0, 16).replace(' ', 'T');
   }
 
   fromDatetimeLocal(value) {
     if (!value) return null;
-    return formatSqlDate(new Date(String(value)));
+    const normalized = String(value).trim();
+    const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+    if (!match) {
+      throw new Error('Некорректная дата мероприятия');
+    }
+    return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6] || '00'}`;
   }
 
   dateTime(value) {
