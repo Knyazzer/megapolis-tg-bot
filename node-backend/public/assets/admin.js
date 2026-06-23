@@ -90,6 +90,7 @@
   function registrationScrollSnapshot() {
     var kanban = document.querySelector('.registrations-workspace .kanban');
     var table = document.querySelector('.registrations-workspace > table');
+    var mainContent = document.querySelector('.admin-page-registrations .main-content');
     var lists = [];
     document.querySelectorAll('[data-kanban-column]').forEach(function (column) {
       var list = column.querySelector('[data-kanban-list]');
@@ -105,6 +106,8 @@
       kanbanTop: kanban ? kanban.scrollTop : 0,
       tableLeft: table ? table.scrollLeft : 0,
       tableTop: table ? table.scrollTop : 0,
+      mainLeft: mainContent ? mainContent.scrollLeft : 0,
+      mainTop: mainContent ? mainContent.scrollTop : 0,
       lists: lists,
     };
   }
@@ -115,6 +118,7 @@
     }
     var kanban = document.querySelector('.registrations-workspace .kanban');
     var table = document.querySelector('.registrations-workspace > table');
+    var mainContent = document.querySelector('.admin-page-registrations .main-content');
     if (kanban) {
       kanban.scrollLeft = snapshot.kanbanLeft || 0;
       kanban.scrollTop = snapshot.kanbanTop || 0;
@@ -122,6 +126,10 @@
     if (table) {
       table.scrollLeft = snapshot.tableLeft || 0;
       table.scrollTop = snapshot.tableTop || 0;
+    }
+    if (mainContent) {
+      mainContent.scrollLeft = snapshot.mainLeft || 0;
+      mainContent.scrollTop = snapshot.mainTop || 0;
     }
     (snapshot.lists || []).forEach(function (item) {
       var column = document.querySelector('[data-kanban-column][data-status="' + item.status + '"]');
@@ -163,6 +171,51 @@
   }
 
   restoreSavedRegistrationScroll();
+
+  function initRegistrationKanbanWheel() {
+    var kanban = document.querySelector('.registrations-workspace .kanban');
+    if (!kanban) {
+      return;
+    }
+
+    kanban.addEventListener('wheel', function (event) {
+      var canScrollBoard = kanban.scrollWidth > kanban.clientWidth + 1;
+      if (!canScrollBoard) {
+        return;
+      }
+
+      var list = event.target.closest('[data-kanban-list]');
+      var deltaX = Number(event.deltaX || 0);
+      var deltaY = Number(event.deltaY || 0);
+
+      if (deltaX !== 0) {
+        if (list && Math.abs(deltaY) > 0) {
+          list.scrollTop += deltaY;
+        }
+        event.preventDefault();
+        kanban.scrollLeft += deltaX;
+        return;
+      }
+
+      if (!deltaY) {
+        return;
+      }
+
+      if (list && !event.shiftKey) {
+        var maxTop = Math.max(0, list.scrollHeight - list.clientHeight);
+        var canMoveDown = deltaY > 0 && list.scrollTop < maxTop - 1;
+        var canMoveUp = deltaY < 0 && list.scrollTop > 1;
+        if (canMoveDown || canMoveUp) {
+          return;
+        }
+      }
+
+      event.preventDefault();
+      kanban.scrollLeft += deltaY;
+    }, { passive: false });
+  }
+
+  initRegistrationKanbanWheel();
 
   document.querySelectorAll('.registrations-workspace a').forEach(function (link) {
     link.addEventListener('click', function () {
@@ -554,6 +607,41 @@
     }, 3500);
   }
 
+  var messagesSidebar = document.querySelector('[data-messages-sidebar]');
+  var messagesPeopleList = document.querySelector('[data-messages-people-list]');
+  var messagesTotal = document.querySelector('[data-messages-total]');
+
+  function pollMessagesPeople() {
+    if (!messagesSidebar || !messagesPeopleList || document.hidden) {
+      return;
+    }
+
+    var selectedPersonId = messagesSidebar.dataset.selectedPersonId || '';
+    var search = document.querySelector('.messages-search input[name="q"]');
+    var q = search ? String(search.value || '') : '';
+    var url = '/?action=messages_people&person_id=' + encodeURIComponent(selectedPersonId) + '&q=' + encodeURIComponent(q);
+    fetch(url, { credentials: 'same-origin' }).then(function (response) {
+      if (!response.ok) {
+        throw new Error('messages people request failed');
+      }
+      return response.json();
+    }).then(function (payload) {
+      if (!payload || !payload.ok) {
+        return;
+      }
+      messagesPeopleList.innerHTML = payload.html || '';
+      if (messagesTotal) {
+        messagesTotal.textContent = payload.totalLabel || '';
+      }
+    }).catch(function () {
+      // The next interval will retry; the current list remains usable.
+    });
+  }
+
+  if (messagesSidebar && messagesPeopleList) {
+    window.setInterval(pollMessagesPeople, 5000);
+  }
+
   function formatFileSize(bytes) {
     var size = Number(bytes || 0);
     if (size >= 1024 * 1024) {
@@ -785,6 +873,310 @@
     syncBroadcastMediaGuide();
     loadBroadcastPreview();
   }
+
+  var eventTimeWidget = document.querySelector('[data-event-time-widget]');
+
+  function initEventTimeWidget() {
+    if (!eventTimeWidget) {
+      return;
+    }
+
+    var startInput = eventTimeWidget.querySelector('[data-event-start]');
+    var durationInput = eventTimeWidget.querySelector('[data-event-duration]');
+    var endInput = eventTimeWidget.querySelector('[data-event-end]');
+    var arrivalInput = eventTimeWidget.querySelector('[data-event-arrival-input]');
+    var arrivalDefault = eventTimeWidget.querySelector('[data-event-arrival-default]');
+    var endLabel = eventTimeWidget.querySelector('[data-event-end-label]');
+    if (!startInput || !durationInput || !endInput) {
+      return;
+    }
+
+    function parseLocalDatetime(value) {
+      var match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+      if (!match) {
+        return null;
+      }
+      return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]));
+    }
+
+    function pad(value) {
+      return String(value).padStart(2, '0');
+    }
+
+    function toLocalDatetimeValue(date) {
+      return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate())
+        + 'T' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+    }
+
+    function formatTimelineDate(date) {
+      return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' }) + ', '
+        + pad(date.getHours()) + ':' + pad(date.getMinutes());
+    }
+
+    function durationMinutes() {
+      var minutes = Number(durationInput.value || 120);
+      if (!Number.isFinite(minutes) || minutes < 15) {
+        minutes = 120;
+      }
+      return Math.round(minutes);
+    }
+
+    function syncEventTime() {
+      var start = parseLocalDatetime(startInput.value);
+      if (!start) {
+        endInput.value = '';
+        if (arrivalDefault) {
+          arrivalDefault.textContent = 'Пусто = укажите старт мероприятия';
+        }
+        if (endLabel) {
+          endLabel.textContent = 'Окончание рассчитается автоматически';
+        }
+        return;
+      }
+
+      var minutes = durationMinutes();
+      if (String(durationInput.value || '') !== String(minutes)) {
+        durationInput.value = String(minutes);
+      }
+      var arrival = new Date(start.getTime() - 30 * 60000);
+      var end = new Date(start.getTime() + minutes * 60000);
+      endInput.value = toLocalDatetimeValue(end);
+      if (arrivalDefault) {
+        arrivalDefault.textContent = 'Пусто = стандарт: ' + formatTimelineDate(arrival);
+      }
+      if (endLabel) {
+        endLabel.textContent = 'Окончание: ' + formatTimelineDate(end);
+      }
+    }
+
+    startInput.addEventListener('input', syncEventTime);
+    startInput.addEventListener('change', syncEventTime);
+    durationInput.addEventListener('input', syncEventTime);
+    durationInput.addEventListener('change', syncEventTime);
+    if (arrivalInput) {
+      arrivalInput.addEventListener('change', syncEventTime);
+    }
+    syncEventTime();
+  }
+
+  initEventTimeWidget();
+
+  var locationWidget = document.querySelector('[data-event-location-widget]');
+
+  var yandexMapsLoadPromise = null;
+
+  function yandexMapsReady() {
+    return new Promise(function (resolve) {
+      window.ymaps.ready(function () {
+        resolve(window.ymaps);
+      });
+    });
+  }
+
+  function loadYandexMaps() {
+    if (window.ymaps && window.ymaps.ready) {
+      return yandexMapsReady();
+    }
+    if (yandexMapsLoadPromise) {
+      return yandexMapsLoadPromise;
+    }
+
+    yandexMapsLoadPromise = new Promise(function (resolve, reject) {
+      var script = document.createElement('script');
+      script.src = 'https://api-maps.yandex.ru/2.1/?lang=ru_RU';
+      script.async = true;
+      script.onload = function () {
+        if (window.ymaps && window.ymaps.ready) {
+          yandexMapsReady().then(resolve);
+        } else {
+          reject(new Error('yandex maps missing'));
+        }
+      };
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+    return yandexMapsLoadPromise;
+  }
+
+  function initEventLocationWidget() {
+    if (!locationWidget) {
+      return;
+    }
+
+    var addressInput = locationWidget.querySelector('[data-location-address]');
+    var latInput = locationWidget.querySelector('input[name="venue_lat"]');
+    var lngInput = locationWidget.querySelector('input[name="venue_lng"]');
+    var geocodeButton = locationWidget.querySelector('[data-location-geocode]');
+    var mapNode = locationWidget.querySelector('[data-location-map]');
+    var status = locationWidget.querySelector('[data-location-status]');
+    if (!addressInput || !latInput || !lngInput || !mapNode) {
+      return;
+    }
+
+    function setStatus(text, isError) {
+      if (!status) {
+        return;
+      }
+      status.textContent = text;
+      status.classList.toggle('danger-text', Boolean(isError));
+    }
+
+    function numberValue(input) {
+      var value = Number(String(input.value || '').replace(',', '.'));
+      return Number.isFinite(value) ? value : null;
+    }
+
+    function formatCoord(value) {
+      return Number(value).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+    }
+
+    function updateInputs(lat, lng) {
+      latInput.value = formatCoord(lat);
+      lngInput.value = formatCoord(lng);
+    }
+
+    loadYandexMaps().then(function (ymaps) {
+      var initialLat = numberValue(latInput);
+      var initialLng = numberValue(lngInput);
+      var hasInitialPoint = initialLat !== null && initialLng !== null;
+      var center = hasInitialPoint ? [initialLat, initialLng] : [55.7558, 37.6173];
+      var map = new ymaps.Map(mapNode, {
+        center: center,
+        controls: ['zoomControl'],
+        zoom: hasInitialPoint ? 16 : 11,
+      }, {
+        suppressMapOpenBlock: true,
+      });
+      var marker = null;
+
+      map.behaviors.enable('scrollZoom');
+
+      function coordsFromLatLng(lat, lng) {
+        return [Number(lat), Number(lng)];
+      }
+
+      function setPoint(coords, message) {
+        var lat = Number(coords[0]);
+        var lng = Number(coords[1]);
+        updateInputs(lat, lng);
+        if (!marker) {
+          marker = new ymaps.Placemark([lat, lng], {}, {
+            draggable: true,
+            preset: 'islands#blueDotIcon',
+          });
+          map.geoObjects.add(marker);
+          marker.events.add('dragend', function () {
+            var markerCoords = marker.geometry.getCoordinates();
+            setPoint(markerCoords, 'Точка обновлена по маркеру.');
+            reverseGeocode(markerCoords);
+          });
+        } else {
+          marker.geometry.setCoordinates([lat, lng]);
+        }
+        map.setCenter([lat, lng], Math.max(map.getZoom(), 16), { duration: 200 });
+        setStatus(message || 'Точка на карте обновлена.');
+      }
+
+      function firstGeoObject(result) {
+        return result && result.geoObjects ? result.geoObjects.get(0) : null;
+      }
+
+      function geoObjectAddress(geoObject) {
+        if (!geoObject) {
+          return '';
+        }
+        if (typeof geoObject.getAddressLine === 'function') {
+          return geoObject.getAddressLine();
+        }
+        return String(geoObject.get('text') || '');
+      }
+
+      function reverseGeocode(coords) {
+        ymaps.geocode(coords, { results: 1 }).then(function (result) {
+          var item = firstGeoObject(result);
+          var address = geoObjectAddress(item);
+          if (address) {
+            addressInput.value = address;
+            setStatus('Адрес обновлён по точке на карте.');
+          }
+        }).catch(function () {
+          setStatus('Точка сохранена. Адрес можно уточнить вручную.', true);
+        });
+      }
+
+      if (hasInitialPoint) {
+        setPoint(coordsFromLatLng(initialLat, initialLng), 'Точка площадки уже задана.');
+      }
+
+      map.events.add('click', function (event) {
+        var coords = event.get('coords');
+        setPoint(coords, 'Точка поставлена на карте. Уточняю адрес...');
+        reverseGeocode(coords);
+      });
+
+      var lastGeocodedQuery = '';
+
+      function geocodeAddress() {
+        var query = String(addressInput.value || '').trim();
+        if (!query) {
+          setStatus('Введите адрес, чтобы найти его на карте.', true);
+          addressInput.focus();
+          return;
+        }
+        if (query === lastGeocodedQuery) {
+          return;
+        }
+
+        if (geocodeButton) {
+          geocodeButton.disabled = true;
+        }
+        setStatus('Ищу адрес на Яндекс.Картах...');
+
+        ymaps.geocode(query, { results: 1 }).then(function (result) {
+          var item = firstGeoObject(result);
+          if (!item) {
+            setStatus('Адрес не найден. Попробуйте уточнить город, улицу и дом.', true);
+            return;
+          }
+          lastGeocodedQuery = query;
+          var coords = item.geometry.getCoordinates();
+          var address = geoObjectAddress(item);
+          if (address) {
+            addressInput.value = address;
+          }
+          setPoint(coords, 'Адрес найден на карте.');
+        }).catch(function () {
+          setStatus('Не удалось найти адрес. Можно поставить точку кликом на карте.', true);
+        }).finally(function () {
+          if (geocodeButton) {
+            geocodeButton.disabled = false;
+          }
+        });
+      }
+
+      if (geocodeButton) {
+        geocodeButton.addEventListener('click', geocodeAddress);
+      }
+      addressInput.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          geocodeAddress();
+        }
+      });
+      addressInput.addEventListener('blur', function () {
+        if (String(addressInput.value || '').trim()) {
+          geocodeAddress();
+        }
+      });
+      window.setTimeout(function () {
+        map.container.fitToViewport();
+      }, 120);
+    }).catch(function () {
+      setStatus('Яндекс.Карта не загрузилась. Адрес можно сохранить без карты.', true);
+    });
+  }
+
+  initEventLocationWidget();
 
   var modal = document.querySelector('.flow-modal');
   if (!modal) {

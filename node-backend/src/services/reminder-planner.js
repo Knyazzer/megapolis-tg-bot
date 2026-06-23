@@ -3,21 +3,42 @@ import { formatSqlDate, nowSql, parseDate, shiftDate } from '../utils/dates.js';
 
 const OFFLINE_TYPES = ['offline_1day', 'offline_2hours', 'offline_started'];
 const ONLINE_TYPES = ['online_15min', 'online_started'];
-// Keep legacy postpromo here so cancellations also close old queued records.
-const ALL_TYPES = [...OFFLINE_TYPES, ...ONLINE_TYPES, 'postpromo'];
+const POSTPROMO_TYPES = ['postpromo'];
+const ALL_TYPES = [...OFFLINE_TYPES, ...ONLINE_TYPES, ...POSTPROMO_TYPES];
 
 export class ReminderPlanner {
   async planOnline(registration, event) {
     await this.cancelOffline(registration);
+    await this.cancelOnline(registration);
     const onlineStart = event.online_start || event.date_start;
-    await this.schedule(registration, event, 'online_15min', shiftDate(onlineStart, -15 * 60 * 1000));
-    await this.schedule(registration, event, 'online_started', parseDate(onlineStart));
+    await this.schedule(registration, event, 'online_15min', this.eventSendAt(event, 'online_15min_send_at', shiftDate(onlineStart, -15 * 60 * 1000)));
+    await this.schedule(registration, event, 'online_started', this.eventSendAt(event, 'online_started_send_at', parseDate(onlineStart)));
+    await this.planPostPromo(registration, event);
   }
 
   async planOfflineApproved(registration, event) {
-    await this.schedule(registration, event, 'offline_1day', shiftDate(event.date_start, -24 * 60 * 60 * 1000));
-    await this.schedule(registration, event, 'offline_2hours', shiftDate(event.date_start, -2 * 60 * 60 * 1000));
-    await this.schedule(registration, event, 'offline_started', parseDate(event.date_start));
+    await this.cancelOnline(registration);
+    await this.cancelOffline(registration);
+    await this.schedule(registration, event, 'offline_1day', this.eventSendAt(event, 'offline_1day_send_at', shiftDate(event.date_start, -24 * 60 * 60 * 1000)));
+    await this.schedule(registration, event, 'offline_2hours', this.eventSendAt(event, 'offline_2hours_send_at', shiftDate(event.date_start, -2 * 60 * 60 * 1000)));
+    await this.schedule(registration, event, 'offline_started', this.eventSendAt(event, 'offline_started_send_at', parseDate(event.date_start)));
+    await this.planPostPromo(registration, event);
+  }
+
+  async planPostPromo(registration, event) {
+    await this.cancelTypes(registration, POSTPROMO_TYPES);
+    const message = String(event?.postpromo_message || '').trim();
+    const sendAt = event?.postpromo_send_at ? parseDate(event.postpromo_send_at) : null;
+    const status = String(registration?.status || '');
+    if (!message || !sendAt || !['approved', 'visited'].includes(status) || registration?.archived_at) {
+      return;
+    }
+    await this.schedule(registration, event, 'postpromo', sendAt);
+  }
+
+  eventSendAt(event, field, fallback) {
+    const custom = String(event?.[field] || '').trim();
+    return custom ? parseDate(custom) : fallback;
   }
 
   async cancelOffline(registration) {

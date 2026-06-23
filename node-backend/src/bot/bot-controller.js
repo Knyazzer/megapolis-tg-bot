@@ -11,7 +11,7 @@ import { ChatRepository } from '../repositories/chat-repository.js';
 import { FacecastClient } from '../services/facecast-client.js';
 import { ReminderPlanner } from '../services/reminder-planner.js';
 import { TelegramClient } from '../services/telegram-client.js';
-import { dateShort, nowSql, timeOnly, timeRange } from '../utils/dates.js';
+import { dateShort, nowSql, shiftDate, timeOnly, timeRange } from '../utils/dates.js';
 import { h } from '../utils/html.js';
 import { logger } from '../utils/logger.js';
 import {
@@ -719,6 +719,7 @@ export class BotController {
       + `<b>Название:</b> ${h(event.title)}\n`
       + `<b>Дата:</b> ${h(dateShort(event.date_start))}\n`
       + `<b>Время:</b> ${h(timeRange(event.date_start, event.date_end))}\n`
+      + `<b>Сбор гостей:</b> ${h(this.offlineArrivalTime(event))}\n`
       + `<b>Наш адрес:</b> ${h(event.address || '')}\n`
       + '<b>Формат:</b> офлайн';
 
@@ -746,6 +747,11 @@ export class BotController {
         logger.warn('failed to notify admin', { adminId, message: error.message });
       }
     }
+  }
+
+  offlineArrivalTime(event) {
+    const value = String(event.guest_arrival_at || '').trim();
+    return timeOnly(value || shiftDate(event.date_start, -30 * 60 * 1000));
   }
 
   async ensureProfileReady(chatId, person) {

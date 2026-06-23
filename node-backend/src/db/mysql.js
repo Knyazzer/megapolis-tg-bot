@@ -180,6 +180,7 @@ function ensureSqliteSchema(database) {
       state_payload TEXT NULL,
       chat_mode TEXT NOT NULL DEFAULT 'bot',
       chat_mode_updated_at TEXT NULL,
+      chat_read_at TEXT NULL,
       last_seen_at TEXT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -192,6 +193,7 @@ function ensureSqliteSchema(database) {
       description TEXT NULL,
       date_start TEXT NOT NULL,
       date_end TEXT NOT NULL,
+      guest_arrival_at TEXT NULL,
       online_start TEXT NULL,
       address TEXT NULL,
       venue_lat REAL NULL,
@@ -201,6 +203,13 @@ function ensureSqliteSchema(database) {
       facecast_url TEXT NULL,
       recording_url TEXT NULL,
       photo_album_url TEXT NULL,
+      postpromo_message TEXT NULL,
+      postpromo_send_at TEXT NULL,
+      offline_1day_send_at TEXT NULL,
+      offline_2hours_send_at TEXT NULL,
+      offline_started_send_at TEXT NULL,
+      online_15min_send_at TEXT NULL,
+      online_started_send_at TEXT NULL,
       is_active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -311,6 +320,15 @@ function ensureSqliteSchema(database) {
   ensureSqliteColumn(database, 'registrations', 'facecast_ticket_id', 'TEXT NULL');
   ensureSqliteColumn(database, 'people', 'chat_mode', "TEXT NOT NULL DEFAULT 'bot'");
   ensureSqliteColumn(database, 'people', 'chat_mode_updated_at', 'TEXT NULL');
+  ensureSqliteColumn(database, 'people', 'chat_read_at', 'TEXT NULL');
+  ensureSqliteColumn(database, 'events', 'guest_arrival_at', 'TEXT NULL');
+  ensureSqliteColumn(database, 'events', 'postpromo_message', 'TEXT NULL');
+  ensureSqliteColumn(database, 'events', 'postpromo_send_at', 'TEXT NULL');
+  ensureSqliteColumn(database, 'events', 'offline_1day_send_at', 'TEXT NULL');
+  ensureSqliteColumn(database, 'events', 'offline_2hours_send_at', 'TEXT NULL');
+  ensureSqliteColumn(database, 'events', 'offline_started_send_at', 'TEXT NULL');
+  ensureSqliteColumn(database, 'events', 'online_15min_send_at', 'TEXT NULL');
+  ensureSqliteColumn(database, 'events', 'online_started_send_at', 'TEXT NULL');
   ensureSqliteColumn(database, 'broadcast_campaigns', 'media_blob', 'BLOB NULL');
   ensureSqliteColumn(database, 'broadcast_campaigns', 'media_mime', 'TEXT NULL');
   ensureSqliteColumn(database, 'broadcast_campaigns', 'media_name', 'TEXT NULL');
