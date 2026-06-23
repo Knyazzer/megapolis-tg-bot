@@ -188,30 +188,14 @@
       var deltaX = Number(event.deltaX || 0);
       var deltaY = Number(event.deltaY || 0);
 
-      if (deltaX !== 0) {
-        if (list && Math.abs(deltaY) > 0) {
-          list.scrollTop += deltaY;
-        }
-        event.preventDefault();
-        kanban.scrollLeft += deltaX;
+      var horizontalByGesture = Math.abs(deltaX) > Math.abs(deltaY) * 1.2;
+      var horizontalByShift = event.shiftKey && deltaY !== 0;
+      if (!horizontalByGesture && !horizontalByShift) {
         return;
-      }
-
-      if (!deltaY) {
-        return;
-      }
-
-      if (list && !event.shiftKey) {
-        var maxTop = Math.max(0, list.scrollHeight - list.clientHeight);
-        var canMoveDown = deltaY > 0 && list.scrollTop < maxTop - 1;
-        var canMoveUp = deltaY < 0 && list.scrollTop > 1;
-        if (canMoveDown || canMoveUp) {
-          return;
-        }
       }
 
       event.preventDefault();
-      kanban.scrollLeft += deltaY;
+      kanban.scrollLeft += horizontalByGesture ? deltaX : deltaY;
     }, { passive: false });
   }
 
@@ -617,9 +601,10 @@
     }
 
     var selectedPersonId = messagesSidebar.dataset.selectedPersonId || '';
+    var scope = messagesSidebar.dataset.scope || 'all';
     var search = document.querySelector('.messages-search input[name="q"]');
     var q = search ? String(search.value || '') : '';
-    var url = '/?action=messages_people&person_id=' + encodeURIComponent(selectedPersonId) + '&q=' + encodeURIComponent(q);
+    var url = '/?action=messages_people&person_id=' + encodeURIComponent(selectedPersonId) + '&q=' + encodeURIComponent(q) + '&scope=' + encodeURIComponent(scope);
     fetch(url, { credentials: 'same-origin' }).then(function (response) {
       if (!response.ok) {
         throw new Error('messages people request failed');

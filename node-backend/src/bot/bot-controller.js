@@ -61,9 +61,13 @@ export class BotController {
     }
 
     const person = await this.people.upsertFromTelegram(from);
-    await this.recordIncomingChatMessage(person, chatId, message);
     const text = String(message.text || '').trim();
+    const messageText = String(message.text || message.caption || '').trim();
     const state = String(person.state || 'new');
+    const delayCreativeBriefRecord = this.shouldDelayCreativeBriefRecord(person, state, text, messageText);
+    if (!delayCreativeBriefRecord) {
+      await this.recordIncomingChatMessage(person, chatId, message);
+    }
 
     if (this.isAdminTelegramId(from.id)) {
       const media = this.adminMediaFileId(message);
@@ -78,12 +82,24 @@ export class BotController {
     }
 
     if (this.isMainMenuText(text)) {
-      await this.sendWelcomeOrMenu(chatId, person);
+      const menuPerson = await this.restoreCreativeBriefStateIfNeeded(person);
+      await this.sendWelcomeOrMenu(chatId, menuPerson);
       return;
     }
 
     if (text === '/menu') {
+      await this.restoreCreativeBriefStateIfNeeded(person);
       await this.sendMainMenu(chatId);
+      return;
+    }
+
+    if (this.isCreativeIdeaText(text)) {
+      await this.startCreativeBrief(chatId, person);
+      return;
+    }
+
+    if (this.isCreativeBriefState(state)) {
+      await this.receiveCreativeBrief(chatId, person, message);
       return;
     }
 
@@ -390,6 +406,56 @@ export class BotController {
 
   async sendMainMenu(chatId) {
     await this.telegram.sendMessage(chatId, '<b>Главное меню</b>\n\nВыберите действие на клавиатуре ниже 🙂', mainMenuKeyboard());
+  }
+
+  async startCreativeBrief(chatId, person) {
+    const previousState = this.isCreativeBriefState(person.state)
+      ? this.creativeBriefPreviousState(person.state)
+      : String(person.state || 'new');
+    await this.people.setState(person.id, `awaiting_creative_brief:${previousState}`);
+    const text = '<b>Давайте найдём идею для вашей задачи 💡</b>\n\n'
+      + 'Опишите её в нескольких предложениях. Чтобы менеджер быстрее попал в точку, можно указать:\n'
+      + '- что за продукт, проект, кампания или мероприятие;\n'
+      + '- для кого это делается;\n'
+      + '- какую цель нужно решить: запуск, вовлечение, продажи, имидж, объяснение сложной темы;\n'
+      + '- где будет жить креатив: Telegram, видео, сайт, эфир, презентация, офлайн-событие;\n'
+      + '- какой тон нужен: смелый, деликатный, экспертный, праздничный, молодой;\n'
+      + '- сроки, ограничения или важные детали.\n\n'
+      + 'Пишите свободно, как в заметках. Мы разберёмся и вернёмся с идеями или уточняющими вопросами.';
+    await this.telegram.sendMessage(chatId, text, removeKeyboard());
+  }
+
+  async receiveCreativeBrief(chatId, person, message) {
+    const text = String(message.text || message.caption || '').trim();
+    if (text.length < 15) {
+      await this.recordIncomingChatMessage(person, chatId, message);
+      await this.telegram.sendMessage(
+        chatId,
+        'Поймали, но нужно чуть больше контекста 🙂\n\nНапишите хотя бы пару предложений: что за проект, для кого он и какую задачу должен решить креатив.',
+        removeKeyboard(),
+      );
+      return;
+    }
+
+    await this.recordIncomingChatMessage(person, chatId, message, { messageType: 'creative_request' });
+    const nextState = this.creativeBriefPreviousState(person.state);
+    await this.people.setState(person.id, nextState || (profileComplete(person) ? 'registered' : 'new'));
+    await this.notifyAdminsAboutCreativeRequest(person, text);
+    await this.telegram.sendMessage(
+      chatId,
+      '<b>Спасибо, заявка на идею принята 💡</b>\n\nМенеджер посмотрит задачу и свяжется с вами здесь: пришлёт первые мысли, материалы или задаст уточняющие вопросы.',
+      mainMenuKeyboard(),
+    );
+  }
+
+  async restoreCreativeBriefStateIfNeeded(person) {
+    if (!this.isCreativeBriefState(person.state)) {
+      return person;
+    }
+
+    const nextState = this.creativeBriefPreviousState(person.state) || (profileComplete(person) ? 'registered' : 'new');
+    await this.people.setState(person.id, nextState);
+    return { ...person, state: nextState };
   }
 
   async sendSocialLinks(chatId) {
@@ -749,6 +815,29 @@ export class BotController {
     }
   }
 
+  async notifyAdminsAboutCreativeRequest(person, brief) {
+    if (config.telegram.adminIds.length === 0) {
+      return;
+    }
+
+    const text = '<b>Новая заявка на идею креатива 💡</b>\n\n'
+      + `<b>Участник:</b> ${h(this.personNameForAdmin(person))}\n`
+      + `<b>Компания:</b> ${h(person.company || 'не указана')}\n`
+      + `<b>Должность:</b> ${h(person.position_title || 'не указана')}\n`
+      + `<b>Телефон:</b> ${h(person.phone || 'не указан')}\n`
+      + `<b>Email:</b> ${h(person.email || 'не указан')}\n\n`
+      + `<b>Бриф:</b>\n${h(String(brief || '').slice(0, 3000))}\n\n`
+      + `${config.appUrl}/?page=messages&person_id=${Number(person.id)}`;
+
+    for (const adminId of config.telegram.adminIds) {
+      try {
+        await this.outboundTelegram.sendMessage(adminId, text);
+      } catch (error) {
+        logger.warn('failed to notify admin about creative request', { adminId, message: error.message });
+      }
+    }
+  }
+
   offlineArrivalTime(event) {
     const value = String(event.guest_arrival_at || '').trim();
     return timeOnly(value || shiftDate(event.date_start, -30 * 60 * 1000));
@@ -814,6 +903,29 @@ export class BotController {
     return ['Мои регистрации', '👤 Мои регистрации'].includes(text);
   }
 
+  isCreativeIdeaText(text) {
+    return ['Получить идею', '💡 Получить идею', 'Идея креатива', '💡 Идея креатива', '/creative'].includes(text);
+  }
+
+  isCreativeBriefState(state) {
+    return String(state || '').startsWith('awaiting_creative_brief');
+  }
+
+  shouldDelayCreativeBriefRecord(person, state, text, messageText) {
+    if (!this.isCreativeBriefState(state) || !messageText || this.isHumanChatMode(person)) {
+      return false;
+    }
+
+    return !this.isMainMenuText(text) && text !== '/menu' && !this.isCreativeIdeaText(text);
+  }
+
+  creativeBriefPreviousState(state) {
+    const value = String(state || '');
+    if (!this.isCreativeBriefState(value)) return '';
+    const previous = value.split(':').slice(1).join(':').trim();
+    return previous && previous.length <= 48 ? previous : 'registered';
+  }
+
   isPhoneButtonText(text) {
     return ['Отправить телефон', '📱 Отправить телефон'].includes(text);
   }
@@ -841,12 +953,12 @@ export class BotController {
     return null;
   }
 
-  async recordIncomingChatMessage(person, chatId, message) {
+  async recordIncomingChatMessage(person, chatId, message, options = {}) {
     try {
       await this.chat.recordIncoming({
         personId: person.id,
         telegramId: chatId,
-        messageType: this.chatMessageType(message),
+        messageType: options.messageType || this.chatMessageType(message),
         text: this.chatMessageText(message),
         ...this.chatMessageMedia(message),
       });
@@ -923,6 +1035,10 @@ export class BotController {
     }
 
     return {};
+  }
+
+  personNameForAdmin(person) {
+    return String(person.full_name || person.first_name || person.username || `Telegram ID ${person.telegram_id}`).trim();
   }
 
   isHumanChatMode(person) {

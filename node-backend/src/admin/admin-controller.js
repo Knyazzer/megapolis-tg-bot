@@ -249,34 +249,34 @@ export class AdminController {
       is_active: 1,
     };
     const event = id > 0 ? (await queryOne('SELECT * FROM events WHERE id = :id LIMIT 1', { id })) || blank : blank;
-    let body = `<section class="panel narrow"><h2>${id > 0 ? 'Редактировать мероприятие' : 'Создать мероприятие'}</h2>`;
-    body += '<form method="post" class="form-grid">';
+    const title = id > 0 ? String(event.title || 'Мероприятие') : 'Новое мероприятие';
+    const subtitle = id > 0 && event.date_start
+      ? `${eventFormatLabel(event)} · ${dateShort(event.date_start)}, ${timeRange(event.date_start, event.date_end)}`
+      : 'Соберите событие, форматы участия и автоматические сообщения';
+    let body = '<section class="panel event-editor">';
+    body += '<form method="post" class="event-edit-form">';
     body += `${csrfField(this.session)}<input type="hidden" name="action" value="save_event"><input type="hidden" name="_return" value="/?page=events"><input type="hidden" name="id" value="${Number(event.id)}">`;
-    body += this.input('Название', 'title', event.title, true);
-    body += this.textarea('Описание для бота', 'description', event.description);
-    body += this.eventTimeWidget(event);
-    body += this.input('Старт онлайна', 'online_start', this.datetimeLocal(event.online_start), false, 'datetime-local');
-    body += `<div class="event-location-widget" data-event-location-widget>
-      <div class="event-location-address">
-        <label>Адрес<input type="text" name="address" value="${h(event.address ?? '')}" data-location-address></label>
-        <button class="button" type="button" data-location-geocode>Найти на карте</button>
+    body += `<header class="event-editor-head">
+      <div>
+        <span class="event-editor-kicker">${id > 0 ? `ID ${Number(event.id)}` : 'Создание'}</span>
+        <h2>${h(title)}</h2>
+        <p>${h(subtitle)}</p>
       </div>
-      <input type="hidden" name="venue_lat" value="${h(event.venue_lat ?? '')}">
-      <input type="hidden" name="venue_lng" value="${h(event.venue_lng ?? '')}">
-      <div class="event-location-map" data-location-map></div>
-      <p class="event-location-status muted" data-location-status>Введите адрес или поставьте точку кликом на карте.</p>
-    </div>`;
-    body += this.input('Лимит офлайн-мест', 'offline_capacity', event.offline_capacity, false, 'number');
-    body += this.input('Facecast event id', 'facecast_event_id', event.facecast_event_id);
-    body += this.input('Ссылка Facecast', 'facecast_url', event.facecast_url, false, 'url');
-    body += this.input('Запись эфира', 'recording_url', event.recording_url, false, 'url');
-    body += `<div class="event-postpromo-widget">
-      <label>Постпромо сообщение<textarea name="postpromo_message" rows="5" placeholder="Сообщение, которое отправим участникам после мероприятия">${h(event.postpromo_message ?? '')}</textarea></label>
-      ${this.input('Дата и время отправки постпромо', 'postpromo_send_at', this.datetimeLocal(event.postpromo_send_at), false, 'datetime-local')}
-    </div>`;
+      <label class="event-active-toggle">
+        <input type="checkbox" name="is_active" value="1" ${Number(event.is_active) === 1 ? 'checked' : ''}>
+        <span><strong>Активно</strong><em>Показывать в боте</em></span>
+      </label>
+    </header>`;
+    body += '<div class="event-editor-layout"><div class="event-editor-main">';
+    body += this.eventEditorSection('Основное', 'Название и текст, который увидит участник в Telegram.', `${this.input('Название', 'title', event.title, true)}${this.textarea('Описание для бота', 'description', event.description)}`);
+    body += this.eventEditorSection('Время и формат', 'Настройка старта, прихода гостей и длительности события.', `${this.eventTimeWidget(event)}<div class="form-row two">${this.input('Старт онлайна', 'online_start', this.datetimeLocal(event.online_start), false, 'datetime-local')}${this.input('Лимит офлайн-мест', 'offline_capacity', event.offline_capacity, false, 'number')}</div>`);
+    body += this.eventEditorSection('Площадка', 'Адрес можно найти через Яндекс.Карты или поставить точку кликом.', this.eventLocationWidget(event));
+    body += '</div><aside class="event-editor-side">';
+    body += this.eventEditorSection('Facecast', 'Данные онлайн-трансляции и записи эфира.', `${this.input('Facecast event id', 'facecast_event_id', event.facecast_event_id)}${this.input('Ссылка Facecast', 'facecast_url', event.facecast_url, false, 'url')}${this.input('Запись эфира', 'recording_url', event.recording_url, false, 'url')}`);
+    body += this.eventEditorSection('Постпромо', 'Сообщение после события. Если не заполнено, бот ничего не отправит.', this.eventPostpromoWidget(event));
+    body += '</aside></div>';
     body += await this.eventNotificationScheduleWidget(event);
-    body += `<label class="check"><input type="checkbox" name="is_active" value="1" ${Number(event.is_active) === 1 ? 'checked' : ''}> Активно</label>`;
-    return `${body}<div class="actions"><button class="button button-primary" type="submit">Сохранить</button><a class="button" href="/?page=events">Назад</a></div></form></section>`;
+    return `${body}<footer class="event-editor-actions"><a class="button" href="/?page=events">Назад</a><button class="button button-primary" type="submit">Сохранить</button></footer></form></section>`;
   }
 
   async peoplePage(url) {
@@ -304,7 +304,8 @@ export class AdminController {
 
   async messagesPage(url) {
     const q = String(url.searchParams.get('q') || '').trim().slice(0, 80);
-    let people = await this.messagePeople(q);
+    const scope = this.messagesScope(url);
+    let people = await this.messagePeople(q, scope);
     const requestedPersonId = Number(url.searchParams.get('person_id') || 0);
     const selectedPersonId = requestedPersonId > 0 ? requestedPersonId : Number(people[0]?.id || 0);
     const selectedPerson = selectedPersonId > 0
@@ -312,15 +313,16 @@ export class AdminController {
       : null;
     if (selectedPerson) {
       await this.chat.markRead(selectedPerson.id);
-      people = await this.messagePeople(q);
+      people = await this.messagePeople(q, scope);
     }
     const messages = selectedPerson ? await this.chatMessages(selectedPerson.id) : [];
 
     let body = '<section class="panel messages-workspace">';
-    body += `<aside class="messages-sidebar" data-messages-sidebar data-selected-person-id="${Number(selectedPersonId || 0)}">`;
+    body += `<aside class="messages-sidebar" data-messages-sidebar data-selected-person-id="${Number(selectedPersonId || 0)}" data-scope="${h(scope)}">`;
     body += `<div class="messages-sidebar-head"><h2>Общение</h2><span class="muted" data-messages-total>${h(this.messagesTotalLabel(people.length))}</span></div>`;
-    body += `<form class="messages-search" method="get"><input type="hidden" name="page" value="messages"><input name="q" value="${h(q)}" placeholder="Найти человека"><button class="button" type="submit">Найти</button></form>`;
-    body += `<div class="messages-people-list" data-messages-people-list>${this.messagePeopleListHtml(people, selectedPersonId, q)}</div></aside>`;
+    body += `<form class="messages-search" method="get"><input type="hidden" name="page" value="messages"><input type="hidden" name="scope" value="${h(scope)}"><input name="q" value="${h(q)}" placeholder="Найти человека"><button class="button" type="submit">Найти</button></form>`;
+    body += this.messagesScopeTabs(scope, q);
+    body += `<div class="messages-people-list" data-messages-people-list>${this.messagePeopleListHtml(people, selectedPersonId, q, scope)}</div></aside>`;
 
     body += '<div class="messages-dialog">';
     if (!selectedPerson) {
@@ -338,11 +340,11 @@ export class AdminController {
       }
     }
     body += '</div>';
-    body += this.directMessageForm(selectedPerson, q);
+    body += this.directMessageForm(selectedPerson, q, scope);
     return `${body}</div></section>`;
   }
 
-  async messagePeople(q) {
+  async messagePeople(q, scope = 'all') {
     const params = {};
     const where = [];
     if (q) {
@@ -357,6 +359,9 @@ export class AdminController {
         p.telegram_id LIKE :search
       )`);
     }
+    if (scope === 'creative') {
+      where.push("EXISTS (SELECT 1 FROM chat_messages cm_creative WHERE cm_creative.person_id = p.id AND cm_creative.message_type = 'creative_request')");
+    }
     const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
     return query(
       `SELECT p.*,
@@ -364,6 +369,8 @@ export class AdminController {
         (SELECT cm.text FROM chat_messages cm WHERE cm.person_id = p.id ORDER BY cm.created_at DESC, cm.id DESC LIMIT 1) AS last_message_text,
         (SELECT cm.direction FROM chat_messages cm WHERE cm.person_id = p.id ORDER BY cm.created_at DESC, cm.id DESC LIMIT 1) AS last_message_direction,
         (SELECT cm.message_type FROM chat_messages cm WHERE cm.person_id = p.id ORDER BY cm.created_at DESC, cm.id DESC LIMIT 1) AS last_message_type,
+        (SELECT COUNT(*) FROM chat_messages cm WHERE cm.person_id = p.id AND cm.message_type = 'creative_request') AS creative_request_count,
+        (SELECT MAX(cm.created_at) FROM chat_messages cm WHERE cm.person_id = p.id AND cm.message_type = 'creative_request') AS last_creative_request_at,
         CASE
           WHEN p.chat_mode = 'human' THEN (
             SELECT COUNT(*)
@@ -382,12 +389,14 @@ export class AdminController {
     );
   }
 
-  messagePeopleListHtml(people, selectedPersonId, q) {
+  messagePeopleListHtml(people, selectedPersonId, q, scope = 'all') {
     if (people.length === 0) {
-      return '<p class="empty">Людей не нашли.</p>';
+      return scope === 'creative'
+        ? '<p class="empty">Заявок на идеи пока нет.</p>'
+        : '<p class="empty">Людей не нашли.</p>';
     }
 
-    return people.map((person) => this.messagePersonLink(person, selectedPersonId, q)).join('');
+    return people.map((person) => this.messagePersonLink(person, selectedPersonId, q, scope)).join('');
   }
 
   async chatMessages(personId) {
@@ -448,14 +457,15 @@ export class AdminController {
 
   async messagesPeopleJson(url) {
     const q = String(url.searchParams.get('q') || '').trim().slice(0, 80);
+    const scope = this.messagesScope(url);
     const selectedPersonId = Number(url.searchParams.get('person_id') || 0);
-    const people = await this.messagePeople(q);
+    const people = await this.messagePeople(q, scope);
     return json({
       ok: true,
       total: people.length,
       totalLabel: this.messagesTotalLabel(people.length),
       unreadTotal: people.reduce((sum, person) => sum + Number(person.unread_messages || 0), 0),
-      html: this.messagePeopleListHtml(people, selectedPersonId, q),
+      html: this.messagePeopleListHtml(people, selectedPersonId, q, scope),
     });
   }
 
@@ -463,17 +473,19 @@ export class AdminController {
     return messages.reduce((max, message) => Math.max(max, Number(message.id || 0)), Number(fallback || 0));
   }
 
-  messagePersonLink(person, selectedPersonId, q) {
+  messagePersonLink(person, selectedPersonId, q, scope = 'all') {
     const active = Number(person.id) === Number(selectedPersonId);
     const name = this.personDisplayName(person);
     const username = person.username ? `@${person.username}` : `ID ${person.telegram_id}`;
     const last = String(person.last_message_text || '').trim();
-    const href = this.messagesUrl({ personId: person.id, q });
+    const href = this.messagesUrl({ personId: person.id, q, scope });
     const mode = String(person.chat_mode || 'bot') === 'human' ? '<b>человек</b>' : '<b class="muted-mode">бот</b>';
+    const hasCreative = Number(person.creative_request_count || 0) > 0;
+    const creativeBadge = hasCreative ? '<b class="creative-mode">креатив</b>' : '';
     const unread = Number(person.unread_messages || 0);
     const unreadBadge = unread > 0 ? `<i class="message-unread">${unread > 99 ? '99+' : unread}</i>` : '';
     const preview = last ? `${this.messagePreviewPrefix(person.last_message_direction, person.last_message_type)}${last}` : 'Нет сообщений';
-    return `<a class="message-person ${active ? 'active' : ''}" href="${h(href)}" data-person-id="${Number(person.id)}"><span class="message-person-top"><strong>${h(name)}</strong><span class="message-person-state">${mode}${unreadBadge}</span></span><span class="message-person-meta">${h(username)}</span><em>${h(preview)}</em></a>`;
+    return `<a class="message-person ${active ? 'active' : ''} ${hasCreative ? 'has-creative' : ''}" href="${h(href)}" data-person-id="${Number(person.id)}"><span class="message-person-top"><strong>${h(name)}</strong><span class="message-person-state">${creativeBadge}${mode}${unreadBadge}</span></span><span class="message-person-meta">${h(username)}${hasCreative ? ` · креатив ${h(this.dateTime(person.last_creative_request_at))}` : ''}</span><em>${h(preview)}</em></a>`;
   }
 
   messagesDialogHeader(person) {
@@ -489,7 +501,10 @@ export class AdminController {
     const label = isHuman ? 'Вернуть боту' : 'Взять диалог';
     const buttonClass = isHuman ? 'button muted-button' : 'button button-primary';
     const confirm = isHuman ? 'Вернуть пользователя в обычный режим бота и отправить ему главное меню?' : '';
-    return `<form method="post" class="inline-form" ${confirm ? `data-confirm="${h(confirm)}"` : ''}>${csrfField(this.session)}<input type="hidden" name="action" value="${h(action)}"><input type="hidden" name="_return" value="${h(this.messagesUrl({ personId: person.id }))}"><input type="hidden" name="person_id" value="${Number(person.id)}"><button class="${h(buttonClass)}" type="submit">${h(label)}</button></form>`;
+    const returnUrl = this.currentUrl && this.currentUrl.startsWith('/?page=messages')
+      ? this.currentUrl
+      : this.messagesUrl({ personId: person.id });
+    return `<form method="post" class="inline-form" ${confirm ? `data-confirm="${h(confirm)}"` : ''}>${csrfField(this.session)}<input type="hidden" name="action" value="${h(action)}"><input type="hidden" name="_return" value="${h(returnUrl)}"><input type="hidden" name="person_id" value="${Number(person.id)}"><button class="${h(buttonClass)}" type="submit">${h(label)}</button></form>`;
   }
 
   chatMessageBubble(message) {
@@ -497,7 +512,7 @@ export class AdminController {
     const status = String(message.status || '');
     const text = String(message.text || '').trim() || this.messageTypeLabel(message.message_type);
     const messageType = String(message.message_type || 'text');
-    let body = `<article class="chat-bubble ${h(direction)} ${status === 'failed' ? 'failed' : ''} ${messageType.startsWith('bot') ? 'bot' : ''}">`;
+    let body = `<article class="chat-bubble ${h(direction)} ${status === 'failed' ? 'failed' : ''} ${messageType.startsWith('bot') ? 'bot' : ''} ${messageType === 'creative_request' ? 'creative' : ''}">`;
     if (message.media_file_id) {
       body += `<div class="chat-media-chip">${h(this.messageTypeLabel(message.message_type))}${message.media_name ? ` · ${h(message.media_name)}` : ''}</div>`;
     }
@@ -512,18 +527,34 @@ export class AdminController {
     return `${body}</article>`;
   }
 
-  directMessageForm(person, q) {
+  directMessageForm(person, q, scope = 'all') {
     const isHuman = String(person.chat_mode || 'bot') === 'human';
     const disabled = isHuman ? '' : 'disabled';
     const lock = isHuman ? '' : '<p class="direct-message-lock">Чтобы написать пользователю, сначала нажмите «Взять диалог».</p>';
-    return `<form method="post" enctype="multipart/form-data" class="direct-message-form ${isHuman ? '' : 'is-locked'}">${csrfField(this.session)}<input type="hidden" name="action" value="send_direct_message"><input type="hidden" name="_return" value="${h(this.messagesUrl({ personId: person.id, q }))}"><input type="hidden" name="person_id" value="${Number(person.id)}"><div class="direct-message-fields"><textarea name="text" rows="3" placeholder="${isHuman ? 'Написать личное сообщение' : 'Диалог ведет бот'}" ${disabled}></textarea><label class="direct-photo-field">Картинка<span class="field-caption">до 50 МБ</span><input type="file" name="media_upload" accept="image/*" data-max-file-size="${DIRECT_IMAGE_UPLOAD_LIMIT}" ${disabled}></label></div>${lock}<button class="button button-primary" type="submit" ${disabled}>Отправить</button></form>`;
+    return `<form method="post" enctype="multipart/form-data" class="direct-message-form ${isHuman ? '' : 'is-locked'}">${csrfField(this.session)}<input type="hidden" name="action" value="send_direct_message"><input type="hidden" name="_return" value="${h(this.messagesUrl({ personId: person.id, q, scope }))}"><input type="hidden" name="person_id" value="${Number(person.id)}"><div class="direct-message-fields"><textarea name="text" rows="3" placeholder="${isHuman ? 'Написать личное сообщение' : 'Диалог ведет бот'}" ${disabled}></textarea><label class="direct-photo-field">Картинка<span class="field-caption">до 50 МБ</span><input type="file" name="media_upload" accept="image/*" data-max-file-size="${DIRECT_IMAGE_UPLOAD_LIMIT}" ${disabled}></label></div>${lock}<button class="button button-primary" type="submit" ${disabled}>Отправить</button></form>`;
   }
 
-  messagesUrl({ personId = 0, q = '' } = {}) {
+  messagesUrl({ personId = 0, q = '', scope = 'all' } = {}) {
     const params = new URLSearchParams({ page: 'messages' });
     if (personId) params.set('person_id', String(Number(personId)));
     if (q) params.set('q', q);
+    if (scope && scope !== 'all') params.set('scope', scope);
     return `/?${params.toString()}`;
+  }
+
+  messagesScope(url) {
+    return String(url.searchParams.get('scope') || '') === 'creative' ? 'creative' : 'all';
+  }
+
+  messagesScopeTabs(scope, q) {
+    const tabs = [
+      ['all', 'Все'],
+      ['creative', 'Креативы'],
+    ];
+    return `<nav class="messages-scope-tabs">${tabs.map(([value, label]) => {
+      const href = this.messagesUrl({ q, scope: value });
+      return `<a class="${scope === value ? 'active' : ''}" href="${h(href)}">${h(label)}</a>`;
+    }).join('')}</nav>`;
   }
 
   personDisplayName(person) {
@@ -538,6 +569,7 @@ export class AdminController {
       bot_video: 'Видео',
       bot_video_note: 'Кружок',
       bot_document: 'Файл',
+      creative_request: 'Бриф на креатив',
       video_note: 'Кружок',
       video: 'Видео',
       photo: 'Картинка',
@@ -559,8 +591,9 @@ export class AdminController {
   }
 
   messagePreviewPrefix(direction, type) {
-    if (direction !== 'out') return '';
     const messageType = String(type || '');
+    if (messageType === 'creative_request') return 'Бриф: ';
+    if (direction !== 'out') return '';
     if (messageType.startsWith('bot')) return 'Бот: ';
     if (messageType === 'system') return 'Система: ';
     return 'Вы: ';
@@ -2163,6 +2196,33 @@ export class AdminController {
     return `<label>${h(label)}<textarea name="${h(name)}" rows="8">${h(value ?? '')}</textarea></label>`;
   }
 
+  eventEditorSection(title, description, content) {
+    return `<section class="event-section">
+      <header><div><h3>${h(title)}</h3><p>${h(description)}</p></div></header>
+      <div class="event-section-body">${content}</div>
+    </section>`;
+  }
+
+  eventLocationWidget(event) {
+    return `<div class="event-location-widget" data-event-location-widget>
+      <div class="event-location-address">
+        <label>Адрес<input type="text" name="address" value="${h(event.address ?? '')}" data-location-address></label>
+        <button class="button" type="button" data-location-geocode>Найти на карте</button>
+      </div>
+      <input type="hidden" name="venue_lat" value="${h(event.venue_lat ?? '')}">
+      <input type="hidden" name="venue_lng" value="${h(event.venue_lng ?? '')}">
+      <div class="event-location-map" data-location-map></div>
+      <p class="event-location-status muted" data-location-status>Введите адрес или поставьте точку кликом на карте.</p>
+    </div>`;
+  }
+
+  eventPostpromoWidget(event) {
+    return `<div class="event-postpromo-widget">
+      <label>Сообщение<textarea name="postpromo_message" rows="5" placeholder="Сообщение, которое отправим участникам после мероприятия">${h(event.postpromo_message ?? '')}</textarea></label>
+      ${this.input('Дата и время отправки', 'postpromo_send_at', this.datetimeLocal(event.postpromo_send_at), false, 'datetime-local')}
+    </div>`;
+  }
+
   eventTimeWidget(event) {
     const start = this.datetimeLocal(event.date_start);
     const end = this.datetimeLocal(event.date_end);
@@ -2617,7 +2677,7 @@ export class AdminController {
 
   flowNodes() {
     return {
-      start: this.flowNodeData('1', 'Первое касание', 'Бот', 96, 154, [['/start', 'Мегаполис Медиа на связи 👋\n\nЗдесь можно зарегистрироваться на митапы, эфиры и деловые встречи.\n\nСначала коротко познакомимся: это нужно для регистрации, допуска к эфиру и связи с вами. Анкета без марафона, обещаем 🙂']], ['Зарегистрироваться', 'Главное меню']),
+      start: this.flowNodeData('1', 'Первое касание', 'Бот', 96, 154, [['/start', 'Мегаполис Медиа на связи 👋\n\nЗдесь можно зарегистрироваться на митапы, эфиры и деловые встречи.\n\nСначала коротко познакомимся: это нужно для регистрации, допуска к эфиру и связи с вами. Анкета без марафона, обещаем 🙂']], ['Зарегистрироваться', 'Получить идею', 'Главное меню']),
       consent: this.flowNodeData('2', 'Согласие', 'Данные', 560, 154, [['Перед анкетой', `Согласие на обработку персональных данных\n\nМы будем использовать ФИО, компанию, должность, телефон и email для регистрации на мероприятия, коммуникации, допуска к эфиру и отправки материалов.\n\nПолный текст: ${config.links.privacy}`]], ['Даю согласие', 'Главное меню']),
       profile: this.flowNodeData('3', 'Анкета', 'Данные', 1024, 154, [['Имя', 'Спасибо! Давайте познакомимся 🙂 Напишите, пожалуйста, имя и фамилию.'], ['Компания', 'Шаг 2 из 5\n\nИз какой вы компании?'], ['Должность', 'Шаг 3 из 5\n\nА какая у вас должность?'], ['Телефон', 'Шаг 4 из 5\n\nПоделитесь, пожалуйста, номером телефона. Можно отправить его кнопкой ниже.'], ['Email', 'Шаг 5 из 5\n\nИ последний шаг: напишите вашу почту.'], ['Финал анкеты', 'Готово, спасибо! ✨\n\nАнкета собрана. Теперь можно выбрать мероприятие.']], ['Ответ текстом', 'Отправить телефон']),
       events: this.flowNodeData('4', 'Выбор мероприятия', 'Регистрация', 1488, 154, [['Список событий', 'Ближайшие мероприятия\n\nВыберите событие, на которое хотите зарегистрироваться.\n\nАдрес на этом шаге не показываем: человек сначала выбирает событие.'], ['Если событий нет', 'Пока ближайших мероприятий нет.\n\nКак только появится новое событие, мы обязательно расскажем 🙂']], ['Выбрать событие', 'Главное меню']),
@@ -2629,7 +2689,8 @@ export class AdminController {
       visited: this.flowNodeData('7C', 'Пришел', 'Офлайн', 3344, 548, [['Системное действие', 'Статус нужен для отчетности. Материалы после события отправляем вручную через раздел рассылок.']], []),
       online_access: this.flowNodeData('6B', 'Онлайн / запасной доступ', 'Онлайн', 2416, 942, [['Доступ к эфиру', 'Готово, вы зарегистрированы онлайн! 💻\n\nПерсональная ссылка на просмотр будет в кнопке ниже.\nНазвание: {название}\nДата: {дата}\nВремя подключения: {время старта онлайна}\n\nСохраните сообщение, а перед эфиром мы напомним о старте.'], ['Если уже есть офлайн', 'Вы остаётесь в списке офлайн-гостей 🏢\n\nЗапасная персональная ссылка на эфир будет в кнопке ниже.\n\nГлавным вариантом оставляем офлайн-встречу, а ссылку держите как запасной доступ.']], ['Персональная ссылка на эфир', 'Напомнить доступ']),
       reminders: this.flowNodeData('8', 'Напоминания', 'Автоматизация', 2880, 942, [['Офлайн за день', 'Напоминаем о встрече завтра 🏢'], ['Офлайн за 2 часа', 'До офлайн-встречи осталось около двух часов 🙂\n\nЛучше прийти спокойно, чем соревноваться с городским трафиком.'], ['Онлайн за 15 минут', 'Напоминаем про эфир 💻\n\nНачинаем через 15 минут. Можно налить чай и открыть ссылку заранее.'], ['Онлайн старт', 'Мы начали! 💻\n\nДобро пожаловать в прямой эфир. Задавайте вопросы спикерам в чате трансляции.']], ['Открыть эфир', 'Не смогу офлайн']),
-      menu: this.flowNodeData('10', 'Главное меню', 'Навигация', 1488, 942, [['Главное меню', 'Выберите действие на клавиатуре ниже 🙂'], ['Соцсети', 'Мы рядом\n\nНовости, анонсы и материалы публикуем в канале и на сайте.']], ['Телеграм канал', 'Сайт', 'Ближайшие мероприятия']),
+      creative_brief: this.flowNodeData('C1', 'Идея креатива', 'Креативы', 1024, 942, [['Запрос мини-брифа', 'Давайте найдём идею для вашей задачи 💡\n\nОпишите её в нескольких предложениях: что за проект, для кого он, какую цель решаем, где будет жить креатив, какой тон нужен, какие есть сроки и ограничения.'], ['После ответа пользователя', 'Спасибо, заявка на идею принята 💡\n\nМенеджер посмотрит задачу и свяжется с вами здесь: пришлёт первые мысли, материалы или задаст уточняющие вопросы.']], ['Описать задачу', 'Менеджер отвечает']),
+      menu: this.flowNodeData('10', 'Главное меню', 'Навигация', 1488, 942, [['Главное меню', 'Выберите действие на клавиатуре ниже 🙂'], ['Соцсети', 'Мы рядом\n\nНовости, анонсы и материалы публикуем в канале и на сайте.']], ['Телеграм канал', 'Сайт', 'Ближайшие мероприятия', 'Получить идею']),
     };
   }
 
@@ -2640,12 +2701,14 @@ export class AdminController {
   flowEdges() {
     return [
       ['start', 'consent', 'Зарегистрироваться'],
+      ['start', 'creative_brief', 'Получить идею', 'bottom', 'top', [[246, 866], [1174, 866]], { labelSide: 'above' }],
       ['consent', 'profile', 'Даю согласие'],
       ['profile', 'events', 'Анкета заполнена'],
       ['events', 'format_choice', 'Выбрано событие'],
       ['format_choice', 'offline_pending', 'Прийти офлайн'],
       ['format_choice', 'online_access', 'Смотреть онлайн', 'bottom', 'left', [[2102, 852], [2292, 852], [2292, 1085]]],
       ['events', 'menu', 'Главное меню', 'bottom', 'top', [], { labelSide: 'right' }],
+      ['menu', 'creative_brief', 'Получить идею', 'left', 'right'],
       ['offline_pending', 'offline_approved', 'Подтвердить', 'bottom', 'top', [], { labelSide: 'right' }],
       ['offline_pending', 'offline_rejected', 'Отказ'],
       ['offline_rejected', 'online_access', 'Буду онлайн', 'bottom', 'top', [[3030, 866], [2566, 866]], { labelSide: 'above' }],
@@ -2835,6 +2898,7 @@ export class AdminController {
       if (row.attendance === 'online') return 'online_access';
       return { pending: 'offline_pending', approved: 'offline_approved', visited: 'visited', rejected: 'offline_rejected' }[row.status] || 'menu';
     }
+    if (String(row.state || '').startsWith('awaiting_creative_brief')) return 'creative_brief';
     return {
       awaiting_consent: 'consent',
       ask_name: 'profile',

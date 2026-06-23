@@ -13,6 +13,7 @@ export function replyKeyboard(rows, options = {}) {
 export function startRegistrationKeyboard() {
   return replyKeyboard([
     [{ text: '🚀 Зарегистрироваться' }],
+    [{ text: '💡 Получить идею' }],
     [{ text: '🏠 Главное меню' }],
   ], {
     input_field_placeholder: 'Начните регистрацию',
@@ -32,6 +33,7 @@ export function consentKeyboard() {
 export function mainMenuKeyboard() {
   return replyKeyboard([
     [{ text: '🗓 Мероприятия' }, { text: '👤 Мои регистрации' }],
+    [{ text: '💡 Получить идею' }],
     [{ text: '🌐 Соцсети' }, { text: '🏠 Главное меню' }],
   ], {
     is_persistent: true,
