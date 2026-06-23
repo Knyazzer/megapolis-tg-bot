@@ -33,6 +33,7 @@ export function consentKeyboard() {
 export function mainMenuKeyboard() {
   return replyKeyboard([
     [{ text: '🗓 Мероприятия' }, { text: '👤 Мои регистрации' }],
+    [{ text: '🎬 Записи эфиров' }],
     [{ text: '💡 Получить идею' }],
     [{ text: '🌐 Соцсети' }, { text: '🏠 Главное меню' }],
   ], {

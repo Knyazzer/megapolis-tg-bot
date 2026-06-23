@@ -24,10 +24,19 @@ try {
     await runLoop();
   } else {
     await runOnce();
-    await db().end();
+    await closeDb();
   }
 } catch (error) {
   logger.error('worker failed', { message: error.message, stack: error.stack });
-  await db().end();
+  await closeDb();
   process.exitCode = 1;
+}
+
+async function closeDb() {
+  const database = db();
+  if (typeof database.end === 'function') {
+    await database.end();
+  } else if (typeof database.close === 'function') {
+    database.close();
+  }
 }

@@ -7,6 +7,7 @@ import {
 } from '../repositories/events-repository.js';
 import { PeopleRepository, profileComplete } from '../repositories/people-repository.js';
 import { RegistrationsRepository } from '../repositories/registrations-repository.js';
+import { RecordingAccessesRepository } from '../repositories/recording-accesses-repository.js';
 import { ChatRepository } from '../repositories/chat-repository.js';
 import { FacecastClient } from '../services/facecast-client.js';
 import { ReminderPlanner } from '../services/reminder-planner.js';
@@ -33,6 +34,7 @@ export class BotController {
     this.people = new PeopleRepository();
     this.events = new EventsRepository();
     this.registrations = new RegistrationsRepository();
+    this.recordingAccesses = new RecordingAccessesRepository();
     this.chat = new ChatRepository();
     this.facecast = new FacecastClient();
     this.planner = new ReminderPlanner();
@@ -136,6 +138,14 @@ export class BotController {
       return;
     }
 
+    if (this.isRecordingsArchiveText(text)) {
+      if (!(await this.ensureProfileReady(chatId, person))) {
+        return;
+      }
+      await this.sendRecordingsArchive(chatId);
+      return;
+    }
+
     if (this.isSocialsText(text)) {
       await this.sendSocialLinks(chatId);
       return;
@@ -194,6 +204,40 @@ export class BotController {
         return;
       }
       await this.sendEvents(chatId);
+      return;
+    }
+
+    if (data === 'recordings_archive') {
+      if (!(await this.ensureProfileReady(chatId, person))) {
+        return;
+      }
+      await this.sendRecordingsArchive(chatId);
+      return;
+    }
+
+    if (data.startsWith('recording_event:')) {
+      if (!(await this.ensureProfileReady(chatId, person))) {
+        return;
+      }
+      const event = await this.events.findRecordingById(Number(data.slice(16)));
+      if (event) {
+        await this.sendRecordingDetails(chatId, event);
+      } else {
+        await this.sendRecordingUnavailable(chatId);
+      }
+      return;
+    }
+
+    if (data.startsWith('recording_access:')) {
+      if (!(await this.ensureProfileReady(chatId, person))) {
+        return;
+      }
+      const event = await this.events.findRecordingById(Number(data.slice(17)));
+      if (event) {
+        await this.registerRecordingAccess(chatId, person, event);
+      } else {
+        await this.sendRecordingUnavailable(chatId);
+      }
       return;
     }
 
@@ -467,7 +511,8 @@ export class BotController {
 
   async sendMyRegistrations(chatId, person) {
     const rows = await this.registrations.listByPerson(person.id);
-    if (rows.length === 0) {
+    const recordingRows = await this.recordingAccesses.listByPerson(person.id);
+    if (rows.length === 0 && recordingRows.length === 0) {
       await this.telegram.sendMessage(
         chatId,
         '<b>Активных регистраций пока нет.</b>\n\nОткройте ближайшие мероприятия и выберите удобный формат участия 🙂',
@@ -488,10 +533,34 @@ export class BotController {
         + `  Статус: ${h(this.registrationStatusText(row))}`;
     });
 
+    const recordingLines = recordingRows.map((row) => {
+      const access = String(row.facecast_url || '').trim() ? 'ссылка готова' : 'можно запросить в архиве';
+      return `- <b>${h(row.title)}</b>\n`
+        + `  Эфир от ${h(dateShort(row.date_start))}\n`
+        + `  Запись: ${h(access)}`;
+    });
+
+    const sections = [];
+    if (lines.length > 0) {
+      sections.push(`<b>Активные регистрации</b>\n\n${lines.join('\n\n')}`);
+    }
+    if (recordingLines.length > 0) {
+      sections.push(`<b>Записи эфиров</b>\n\n${recordingLines.join('\n\n')}`);
+    }
+
+    const recordingButtons = recordingRows
+      .filter((row) => String(row.facecast_url || '').trim())
+      .map((row) => [{
+        text: `Смотреть: ${this.shortButtonText(row.title)}`,
+        url: String(row.facecast_url).trim(),
+      }]);
+    recordingButtons.push([{ text: 'Записи эфиров', callback_data: 'recordings_archive' }]);
+    recordingButtons.push([{ text: 'Главное меню', callback_data: 'main_menu' }]);
+
     await this.telegram.sendMessage(
       chatId,
-      `<b>Ваши регистрации</b>\n\n${lines.join('\n\n')}`,
-      mainMenuKeyboard(),
+      `<b>Ваши регистрации</b>\n\n${sections.join('\n\n')}`,
+      recordingRows.length > 0 ? inlineKeyboard(recordingButtons) : mainMenuKeyboard(),
     );
   }
 
@@ -514,6 +583,150 @@ export class BotController {
     buttons.push([{ text: 'Главное меню', callback_data: 'main_menu' }]);
 
     await this.telegram.sendMessage(chatId, '<b>Ближайшие мероприятия</b>\n\nВыберите событие, на которое хотите зарегистрироваться:', inlineKeyboard(buttons));
+  }
+
+  async sendRecordingsArchive(chatId) {
+    const events = await this.events.listRecordingsArchive();
+    if (events.length === 0) {
+      await this.telegram.sendMessage(
+        chatId,
+        '<b>Архив эфиров пока пуст.</b>\n\nЗаписи появляются здесь после завершения трансляций и доступны в течение 6 месяцев.',
+        mainMenuKeyboard(),
+      );
+      return;
+    }
+
+    const buttons = events.map((event) => [{
+      text: `${event.title} - ${dateShort(event.date_start)}`,
+      callback_data: `recording_event:${event.id}`,
+    }]);
+    buttons.push([{ text: 'Главное меню', callback_data: 'main_menu' }]);
+
+    await this.telegram.sendMessage(
+      chatId,
+      '<b>Записи эфиров 🎬</b>\n\nВыберите трансляцию. Мы оформим доступ и пришлём ссылку на просмотр записи.',
+      inlineKeyboard(buttons),
+    );
+  }
+
+  async sendRecordingDetails(chatId, event) {
+    const description = String(event.description || '').trim();
+    const preview = description.length > 700 ? `${description.slice(0, 700).trim()}...` : description;
+    let text = '<b>Запись эфира</b>\n\n'
+      + `<b>Название:</b> ${h(event.title)}\n`
+      + `<b>Дата эфира:</b> ${h(dateShort(event.date_start))}\n`
+      + `<b>Доступ:</b> 6 месяцев после эфира\n\n`;
+
+    if (preview) {
+      text += `${h(preview)}\n\n`;
+    }
+
+    text += 'Нажмите кнопку ниже, и мы подготовим вашу ссылку на просмотр записи.';
+
+    await this.telegram.sendMessage(chatId, text, inlineKeyboard([
+      [{ text: 'Получить ссылку на запись', callback_data: `recording_access:${event.id}` }],
+      [{ text: 'Все записи эфиров', callback_data: 'recordings_archive' }],
+      [{ text: 'Главное меню', callback_data: 'main_menu' }],
+    ]));
+  }
+
+  async registerRecordingAccess(chatId, person, event) {
+    const existing = await this.recordingAccesses.findByPersonEvent(person.id, event.id);
+    if (existing) {
+      if (existing.source === 'public_recording' && String(existing.facecast_url || '').trim()) {
+        await this.sendRecordingAccess(chatId, event, existing);
+        return;
+      }
+
+      if (this.facecast.isExistingPersonalAccess(existing, event, person)) {
+        await this.sendRecordingAccess(chatId, event, existing);
+        return;
+      }
+    }
+
+    const canUseFacecast = String(event.facecast_event_id || '').trim() && String(event.facecast_url || '').trim();
+    if (canUseFacecast) {
+      try {
+        const credentials = await this.facecast.registerViewer(event, person);
+        if (this.facecast.isPersonalCredentials(credentials, event, person)) {
+          const access = await this.recordingAccesses.upsert(person.id, event.id, {
+            source: 'facecast',
+            facecast_login: credentials.login,
+            facecast_password: credentials.password,
+            facecast_ticket_id: credentials.ticketId,
+            facecast_url: credentials.url,
+          });
+          await this.sendRecordingAccess(chatId, event, access);
+          return;
+        }
+
+        logger.warn('facecast returned unusable recording access', {
+          eventId: event.id,
+          facecastEventId: event.facecast_event_id,
+          personId: person.id,
+          source: credentials.source || '',
+        });
+      } catch (error) {
+        logger.warn('facecast recording access failed', {
+          eventId: event.id,
+          facecastEventId: event.facecast_event_id,
+          personId: person.id,
+          message: error.message,
+        });
+      }
+    }
+
+    const recordingUrl = String(event.recording_url || '').trim();
+    if (recordingUrl) {
+      const access = await this.recordingAccesses.upsert(person.id, event.id, {
+        source: 'public_recording',
+        facecast_login: person.email || '',
+        facecast_password: '',
+        facecast_ticket_id: '',
+        facecast_url: recordingUrl,
+      });
+      await this.sendRecordingAccess(chatId, event, access);
+      return;
+    }
+
+    await this.telegram.sendMessage(
+      chatId,
+      '<b>Сейчас не получилось создать доступ к записи.</b>\n\nМы уже видим проблему и вернёмся со ссылкой чуть позже.',
+      mainMenuKeyboard(),
+    );
+  }
+
+  async sendRecordingAccess(chatId, event, access) {
+    const url = String(access.facecast_url || event.recording_url || '').trim();
+    const sourceLine = access.source === 'public_recording'
+      ? 'Ссылка на запись готова.'
+      : 'Персональная ссылка на просмотр записи готова.';
+    const text = '<b>Доступ к записи готов 🎬</b>\n\n'
+      + `${sourceLine}\n\n`
+      + `<b>Название:</b> ${h(event.title)}\n`
+      + `<b>Дата эфира:</b> ${h(dateShort(event.date_start))}\n`
+      + '<b>Срок доступа:</b> 6 месяцев после эфира\n\n'
+      + 'Сохраните это сообщение, чтобы вернуться к просмотру в удобное время.';
+
+    const buttons = [];
+    if (url) {
+      buttons.push([{ text: 'Смотреть запись', url }]);
+    }
+    buttons.push([{ text: 'Записи эфиров', callback_data: 'recordings_archive' }]);
+    buttons.push([{ text: 'Главное меню', callback_data: 'main_menu' }]);
+
+    await this.telegram.sendMessage(chatId, text, inlineKeyboard(buttons));
+  }
+
+  async sendRecordingUnavailable(chatId) {
+    await this.telegram.sendMessage(
+      chatId,
+      '<b>Запись сейчас недоступна.</b>\n\nВозможно, срок хранения уже закончился или запись ещё не опубликована.',
+      inlineKeyboard([
+        [{ text: 'Все записи эфиров', callback_data: 'recordings_archive' }],
+        [{ text: 'Главное меню', callback_data: 'main_menu' }],
+      ]),
+    );
   }
 
   async sendEventDetails(chatId, event) {
@@ -879,6 +1092,15 @@ export class BotController {
     return row.status || 'без статуса';
   }
 
+  shortButtonText(value) {
+    const text = String(value || '').trim();
+    if (text.length <= 34) {
+      return text || 'запись';
+    }
+
+    return `${text.slice(0, 31).trim()}...`;
+  }
+
   isMainMenuText(text) {
     return ['/start', 'Главное меню', '🏠 Главное меню'].includes(text);
   }
@@ -893,6 +1115,10 @@ export class BotController {
 
   isEventsText(text) {
     return ['/events', 'Ближайшие мероприятия', '🗓 Мероприятия'].includes(text);
+  }
+
+  isRecordingsArchiveText(text) {
+    return ['/recordings', 'Записи эфиров', '🎬 Записи эфиров', 'Архив эфиров', '🎬 Архив эфиров'].includes(text);
   }
 
   isSocialsText(text) {

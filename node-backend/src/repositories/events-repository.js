@@ -14,6 +14,50 @@ export class EventsRepository {
     );
   }
 
+  async listRecordingsArchive() {
+    const now = formatSqlDate(new Date());
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - 6);
+    const cutoff = formatSqlDate(cutoffDate);
+
+    return query(
+      `SELECT *
+       FROM events
+       WHERE is_active = 1
+         AND date_end < :now
+         AND date_end >= :cutoff
+         AND (
+          (facecast_event_id IS NOT NULL AND facecast_event_id <> '' AND facecast_url IS NOT NULL AND facecast_url <> '')
+          OR (recording_url IS NOT NULL AND recording_url <> '')
+         )
+       ORDER BY date_end DESC
+       LIMIT 10`,
+      { now, cutoff },
+    );
+  }
+
+  async findRecordingById(id) {
+    const now = formatSqlDate(new Date());
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - 6);
+    const cutoff = formatSqlDate(cutoffDate);
+
+    return queryOne(
+      `SELECT *
+       FROM events
+       WHERE id = :id
+         AND is_active = 1
+         AND date_end < :now
+         AND date_end >= :cutoff
+         AND (
+          (facecast_event_id IS NOT NULL AND facecast_event_id <> '' AND facecast_url IS NOT NULL AND facecast_url <> '')
+          OR (recording_url IS NOT NULL AND recording_url <> '')
+         )
+       LIMIT 1`,
+      { id, now, cutoff },
+    );
+  }
+
   async findById(id) {
     return queryOne('SELECT * FROM events WHERE id = :id LIMIT 1', { id });
   }

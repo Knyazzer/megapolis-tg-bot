@@ -22,6 +22,26 @@ const REQUIRED_TABLES = [
       CONSTRAINT fk_chat_person FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
   ],
+  [
+    'recording_accesses',
+    `CREATE TABLE IF NOT EXISTS recording_accesses (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      person_id BIGINT UNSIGNED NOT NULL,
+      event_id BIGINT UNSIGNED NOT NULL,
+      source VARCHAR(32) NOT NULL DEFAULT 'facecast',
+      facecast_login VARCHAR(255) NULL,
+      facecast_password VARCHAR(255) NULL,
+      facecast_ticket_id VARCHAR(255) NULL,
+      facecast_url VARCHAR(500) NULL,
+      created_at DATETIME NOT NULL,
+      updated_at DATETIME NOT NULL,
+      UNIQUE KEY uniq_recording_access_person_event (person_id, event_id),
+      INDEX idx_recording_access_event (event_id),
+      INDEX idx_recording_access_source (source),
+      CONSTRAINT fk_recording_access_person FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE CASCADE,
+      CONSTRAINT fk_recording_access_event FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  ],
 ];
 
 const REQUIRED_COLUMNS = [
@@ -73,11 +93,22 @@ const REQUIRED_COLUMNS = [
   ['registrations', 'facecast_password', 'VARCHAR(255) NULL AFTER facecast_login'],
   ['registrations', 'facecast_ticket_id', 'VARCHAR(255) NULL AFTER facecast_password'],
   ['registrations', 'facecast_url', 'VARCHAR(500) NULL AFTER facecast_ticket_id'],
-  ['registrations', 'rejection_reason', 'VARCHAR(500) NULL AFTER facecast_url'],
+  ['registrations', 'facecast_watch_minutes', 'INT UNSIGNED NULL AFTER facecast_url'],
+  ['registrations', 'facecast_total_watch_minutes', 'INT UNSIGNED NULL AFTER facecast_watch_minutes'],
+  ['registrations', 'facecast_stats_synced_at', 'DATETIME NULL AFTER facecast_total_watch_minutes'],
+  ['registrations', 'rejection_reason', 'VARCHAR(500) NULL AFTER facecast_stats_synced_at'],
   ['registrations', 'approved_at', 'DATETIME NULL AFTER rejection_reason'],
   ['registrations', 'archived_at', 'DATETIME NULL AFTER approved_at'],
   ['registrations', 'created_at', 'DATETIME NULL AFTER archived_at'],
   ['registrations', 'updated_at', 'DATETIME NULL AFTER created_at'],
+
+  ['recording_accesses', 'source', "VARCHAR(32) NOT NULL DEFAULT 'facecast' AFTER event_id"],
+  ['recording_accesses', 'facecast_login', 'VARCHAR(255) NULL AFTER source'],
+  ['recording_accesses', 'facecast_password', 'VARCHAR(255) NULL AFTER facecast_login'],
+  ['recording_accesses', 'facecast_ticket_id', 'VARCHAR(255) NULL AFTER facecast_password'],
+  ['recording_accesses', 'facecast_url', 'VARCHAR(500) NULL AFTER facecast_ticket_id'],
+  ['recording_accesses', 'created_at', 'DATETIME NULL AFTER facecast_url'],
+  ['recording_accesses', 'updated_at', 'DATETIME NULL AFTER created_at'],
 
   ['scheduled_messages', 'payload', 'JSON NULL AFTER send_at'],
   ['scheduled_messages', 'sent_at', 'DATETIME NULL AFTER payload'],
@@ -123,6 +154,8 @@ const REQUIRED_INDEXES = [
   ['registrations', 'idx_registrations_event_status', 'CREATE INDEX idx_registrations_event_status ON registrations (event_id, status)'],
   ['registrations', 'idx_registrations_attendance', 'CREATE INDEX idx_registrations_attendance ON registrations (attendance)'],
   ['registrations', 'idx_registrations_archived', 'CREATE INDEX idx_registrations_archived ON registrations (archived_at)'],
+  ['recording_accesses', 'idx_recording_access_event', 'CREATE INDEX idx_recording_access_event ON recording_accesses (event_id)'],
+  ['recording_accesses', 'idx_recording_access_source', 'CREATE INDEX idx_recording_access_source ON recording_accesses (source)'],
   ['scheduled_messages', 'idx_scheduled_due', 'CREATE INDEX idx_scheduled_due ON scheduled_messages (send_at, sent_at, failed_at)'],
   ['broadcast_campaigns', 'idx_campaigns_status', 'CREATE INDEX idx_campaigns_status ON broadcast_campaigns (status)'],
   ['broadcast_messages', 'idx_broadcast_messages_queue', 'CREATE INDEX idx_broadcast_messages_queue ON broadcast_messages (status, id)'],

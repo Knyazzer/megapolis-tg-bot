@@ -9,6 +9,7 @@ import {
   eventSupportsOnline,
 } from '../repositories/events-repository.js';
 import { ChatRepository } from '../repositories/chat-repository.js';
+import { FacecastClient } from '../services/facecast-client.js';
 import { ReminderPlanner } from '../services/reminder-planner.js';
 import { TelegramClient } from '../services/telegram-client.js';
 import { dateShort, formatSqlDate, nowSql, parseDate, shiftDate, timeOnly, timeRange } from '../utils/dates.js';
@@ -22,7 +23,7 @@ const FLOW_NODE_WIDTH = 300;
 const FLOW_NODE_HEIGHT = 286;
 const FLOW_CONNECTOR_GAP = 24;
 const FLOW_BOARD_WIDTH = 3720;
-const FLOW_BOARD_HEIGHT = 1460;
+const FLOW_BOARD_HEIGHT = 1660;
 const FLOW_EDGE_LABEL_OFFSET = 26;
 const BROADCAST_UPLOAD_LIMITS = {
   photo: 10 * 1024 * 1024,
@@ -41,6 +42,7 @@ export class AdminController {
     this.telegram = this.adminTelegramClient();
     this.planner = new ReminderPlanner();
     this.chat = new ChatRepository();
+    this.facecast = new FacecastClient();
   }
 
   async handle({ method, url, form }) {
@@ -77,6 +79,10 @@ export class AdminController {
       return this.messagesPeopleJson(url);
     }
 
+    if (action === 'registration_details') {
+      return this.registrationDetailsJson(url);
+    }
+
     const page = String(url.searchParams.get('page') || 'registrations');
     const content = await this.page(page, url);
     return html(this.layout(this.pageTitle(page), content, page));
@@ -109,6 +115,8 @@ export class AdminController {
         await this.markVisited(form);
       } else if (action === 'undo_visited') {
         await this.undoVisited(form);
+      } else if (action === 'sync_facecast_registration') {
+        await this.syncFacecastRegistration(form);
       } else if (action === 'create_broadcast') {
         await this.createBroadcast(form);
       } else if (action === 'send_direct_message') {
@@ -166,6 +174,7 @@ export class AdminController {
       'reject_registration',
       'archive_registration',
       'restore_registration',
+      'sync_facecast_registration',
     ].includes(action)) {
       const row = await this.registrationRow(Number(form.id || 0));
       return json({
@@ -210,15 +219,47 @@ export class AdminController {
 
   async eventsPage() {
     const events = await query('SELECT * FROM events ORDER BY date_start DESC');
+    const announcementCounts = await this.eventAnnouncementRecipientCounts(events);
     let body = '<section class="panel"><div class="panel-head"><h2>Мероприятия</h2><a class="button button-primary" href="/?page=event_edit">Создать</a></div>';
     body += '<table><thead><tr><th>Название</th><th>Дата</th><th>Формат</th><th>Статус</th><th></th></tr></thead><tbody>';
     for (const event of events) {
+      const announcementCount = Number(announcementCounts.get(Number(event.id)) || 0);
       body += `<tr><td><strong>${h(event.title)}</strong><div class="muted">${h(event.slug)}</div></td>`;
       body += `<td>${h(this.dateTime(event.date_start))}</td><td>${h(eventFormatLabel(event))}</td>`;
       body += `<td>${Number(event.is_active) === 1 ? '<span class="badge ok">Активно</span>' : '<span class="badge">Скрыто</span>'}</td>`;
-      body += `<td><a class="button" href="/?page=event_edit&id=${Number(event.id)}">Открыть</a></td></tr>`;
+      body += `<td><div class="event-row-actions"><a class="button" href="/?page=event_edit&id=${Number(event.id)}">Открыть</a><a class="button muted-button" href="${h(this.eventAnnouncementUrl(event))}">Анонсировать мероприятие</a><span class="muted">${announcementCount} получ.</span></div></td></tr>`;
     }
     return `${body}</tbody></table></section>`;
+  }
+
+  async eventAnnouncementRecipientCounts(events) {
+    if (events.length === 0) {
+      return new Map();
+    }
+
+    const rows = await query(
+      `SELECT e.id AS event_id, COUNT(DISTINCT p.id) AS total
+       FROM events e
+       JOIN people p ON p.consent_accepted_at IS NOT NULL
+       LEFT JOIN registrations r
+        ON r.person_id = p.id
+        AND r.event_id = e.id
+        AND r.archived_at IS NULL
+        AND r.status NOT IN ('cancelled','rejected')
+       WHERE r.id IS NULL
+       GROUP BY e.id`,
+    );
+    return new Map(rows.map((row) => [Number(row.event_id), Number(row.total || 0)]));
+  }
+
+  eventAnnouncementUrl(event) {
+    const params = new URLSearchParams({
+      page: 'broadcasts',
+      audience: 'event_not_registered',
+      event_id: String(Number(event.id)),
+      announce: '1',
+    });
+    return `/?${params.toString()}`;
   }
 
   async eventEditPage(id) {
@@ -868,7 +909,7 @@ export class AdminController {
     const eventId = Number(url.searchParams.get('event_id') || 0);
     const view = ['all', 'online', 'offline', 'archived'].includes(url.searchParams.get('view')) ? url.searchParams.get('view') : 'all';
     const layout = ['list', 'kanban'].includes(url.searchParams.get('layout')) ? url.searchParams.get('layout') : (view === 'all' ? 'kanban' : 'list');
-    const events = await query('SELECT id, title, date_start FROM events ORDER BY date_start DESC');
+    const events = await query('SELECT * FROM events ORDER BY date_start DESC');
     const selectedEvent = events.find((event) => Number(event.id) === eventId) || null;
     const where = [];
     const params = {};
@@ -931,7 +972,8 @@ export class AdminController {
 
   async broadcastsPage(url) {
     const tab = String(url.searchParams.get('tab') || 'new');
-    const events = await query('SELECT id, title, date_start FROM events ORDER BY date_start DESC');
+    const events = await query('SELECT * FROM events ORDER BY date_start DESC');
+    const defaults = await this.broadcastDefaults(url, events);
     const campaigns = await this.broadcastCampaigns();
     let body = '<section class="panel broadcast-page">';
     body += `<nav class="broadcast-tabs" aria-label="Раздел рассылок"><a class="${tab !== 'history' ? 'active' : ''}" href="/?page=broadcasts">Новая рассылка</a><a class="${tab === 'history' ? 'active' : ''}" href="/?page=broadcasts&tab=history">История</a></nav>`;
@@ -957,18 +999,22 @@ export class AdminController {
       return `${body}</tbody></table></div></section>`;
     }
 
-    body += '<div class="broadcast-compose"><div class="panel-head"><h2>Новая рассылка</h2><span class="muted">Выберите аудиторию и проверьте получателей</span></div><form method="post" enctype="multipart/form-data" class="form-grid broadcast-form" data-broadcast-form>';
+    body += '<div class="broadcast-compose"><div class="panel-head"><h2>Новая рассылка</h2><span class="muted">Выберите аудиторию и проверьте получателей</span></div>';
+    if (defaults.isAnnouncement) {
+      body += '<div class="broadcast-intent"><strong>Анонс мероприятия</strong><span>Аудитория уже выбрана: все контакты бота, которые ещё не участвуют в этом событии. Перед отправкой проверьте текст и список получателей.</span></div>';
+    }
+    body += '<form method="post" enctype="multipart/form-data" class="form-grid broadcast-form" data-broadcast-form>';
     body += `${csrfField(this.session)}<input type="hidden" name="action" value="create_broadcast"><input type="hidden" name="_return" value="/?page=broadcasts&tab=history">`;
     body += '<div class="broadcast-fields">';
-    body += this.input('Название рассылки', 'title', '', true);
+    body += this.input('Название рассылки', 'title', defaults.title, true);
     body += '<label>Аудитория<select name="audience" required>';
     for (const [key, label] of Object.entries(this.audiences())) {
-      body += `<option value="${h(key)}" data-requires-event="${this.audienceRequiresEvent(key) ? '1' : '0'}">${h(label)}</option>`;
+      body += `<option value="${h(key)}" data-requires-event="${this.audienceRequiresEvent(key) ? '1' : '0'}" ${defaults.audience === key ? 'selected' : ''}>${h(label)}</option>`;
     }
     body += '</select></label><label>Мероприятие<select name="event_id"><option value="0">Не привязывать</option>';
-    for (const event of events) body += `<option value="${Number(event.id)}">${h(`${event.title} - ${dateShort(event.date_start)}`)}</option>`;
-    body += '</select></label><label>Тип<select name="content_type"><option value="text">Текст</option><option value="photo">Картинка</option><option value="video">Видео</option><option value="video_note">Кружок / видео-сообщение</option></select></label>';
-    body += this.textarea('Текст сообщения', 'body', '');
+    for (const event of events) body += `<option value="${Number(event.id)}" ${defaults.eventId === Number(event.id) ? 'selected' : ''}>${h(`${event.title} - ${dateShort(event.date_start)}`)}</option>`;
+    body += '</select></label><label>Тип<select name="content_type"><option value="text" selected>Текст</option><option value="photo">Картинка</option><option value="video">Видео</option><option value="video_note">Кружок / видео-сообщение</option></select></label>';
+    body += this.textarea('Текст сообщения', 'body', defaults.body);
     body += '<label class="broadcast-upload-field">Файл<span class="field-caption">Выберите картинку или видео с компьютера</span><input type="file" name="media_upload" data-broadcast-file-input accept="image/*,video/mp4,video/quicktime,video/webm"></label>';
     body += '<label class="broadcast-media-field">Ссылка или Telegram file_id<span class="field-caption">Необязательно, если файл загружен выше</span><input type="text" name="media_file_id" value="" data-broadcast-media-input placeholder="Для текста оставьте пустым"></label>';
     body += '<div class="broadcast-media-help" data-broadcast-media-help>';
@@ -980,6 +1026,39 @@ export class AdminController {
     body += '<aside class="broadcast-preview" data-broadcast-preview><div class="broadcast-preview-head"><strong>Получатели</strong><span class="muted" data-broadcast-preview-count>Загрузка...</span></div><div class="broadcast-preview-list" data-broadcast-preview-list></div></aside>';
     body += '<div class="actions broadcast-actions"><button class="button button-primary" type="submit">Поставить в очередь</button><a class="button muted-button" href="/?page=broadcasts&tab=history">Открыть историю</a></div></form></div></section>';
     return body;
+  }
+
+  async broadcastDefaults(url, events) {
+    const requestedAudience = String(url.searchParams.get('audience') || 'all');
+    const audience = Object.hasOwn(this.audiences(), requestedAudience) ? requestedAudience : 'all';
+    const eventId = Number(url.searchParams.get('event_id') || 0);
+    const event = events.find((row) => Number(row.id) === eventId) || null;
+    const isAnnouncement = url.searchParams.get('announce') === '1' && event;
+    if (!isAnnouncement) {
+      return { isAnnouncement: false, audience, eventId, title: '', body: '' };
+    }
+
+    return {
+      isAnnouncement: true,
+      audience: 'event_not_registered',
+      eventId: Number(event.id),
+      title: `Анонс: ${event.title}`,
+      body: this.eventAnnouncementText(event),
+    };
+  }
+
+  eventAnnouncementText(event) {
+    const description = String(event.description || '').trim();
+    const descriptionBlock = description ? `\n\n${description}` : '';
+    const addressNote = eventSupportsOffline(event)
+      ? '\n\nЕсли тема вам близка, выберите формат участия в боте. Адрес офлайн-площадки пришлём после подтверждения участия.'
+      : '\n\nЕсли тема вам близка, выберите участие в боте, и мы пришлём доступ к трансляции.';
+    return '<b>Приглашаем на мероприятие Мегаполис Медиа</b> ✨\n\n'
+      + `<b>${event.title}</b>\n`
+      + `${dateShort(event.date_start)}, ${timeRange(event.date_start, event.date_end)}\n`
+      + `Формат: ${eventFormatLabel(event)}`
+      + `${descriptionBlock}`
+      + addressNote;
   }
 
   async flowPage() {
@@ -1485,6 +1564,42 @@ export class AdminController {
     this.flash('Отметка прихода снята');
   }
 
+  async syncFacecastRegistration(form) {
+    const registration = await this.registrationWithDetails(Number(form.id || 0));
+    if (!registration) throw new Error('Регистрация не найдена');
+    if (!String(registration.facecast_password || '').trim()) throw new Error('У регистрации нет персонального ключа Facecast');
+
+    const activity = await this.facecast.viewerActivity(registration, registration);
+    const status = Number(activity.totalWatchMinutes || 0) > 0
+      && !['rejected', 'cancelled'].includes(String(registration.status || ''))
+      ? 'visited'
+      : registration.status;
+    await execute(
+      `UPDATE registrations
+       SET facecast_watch_minutes = :watchMinutes,
+        facecast_total_watch_minutes = :totalWatchMinutes,
+        facecast_stats_synced_at = :now,
+        status = :status,
+        updated_at = :now
+       WHERE id = :id`,
+      {
+        id: registration.id,
+        watchMinutes: activity.watchMinutes,
+        totalWatchMinutes: activity.totalWatchMinutes,
+        status,
+        now: nowSql(),
+      },
+    );
+
+    if (!activity.found) {
+      this.flash('Facecast пока не вернул просмотр по этому зрителю');
+    } else if (Number(activity.totalWatchMinutes || 0) > 0) {
+      this.flash(`Просмотр обновлен: ${Number(activity.totalWatchMinutes)} мин.`);
+    } else {
+      this.flash('Просмотр обновлен: минут пока нет');
+    }
+  }
+
   async createBroadcast(form) {
     const title = String(form.title || '').trim();
     const audience = String(form.audience || '');
@@ -1755,8 +1870,171 @@ export class AdminController {
     );
   }
 
+  async registrationDetailsJson(url) {
+    const id = Number(url.searchParams.get('id') || 0);
+    if (id <= 0) {
+      return json({ ok: false, error: 'id is required' }, 400);
+    }
+
+    const registration = await this.registrationWithDetails(id);
+    if (!registration) {
+      return json({ ok: false, error: 'Registration not found' }, 404);
+    }
+
+    const [history, messages] = await Promise.all([
+      this.registrationPersonHistory(registration.person_id),
+      this.registrationPersonMessages(registration.person_id),
+    ]);
+
+    return json({
+      ok: true,
+      title: registration.full_name || 'Карточка участника',
+      html: this.registrationDetailsHtml(registration, history, messages),
+    });
+  }
+
+  async registrationPersonHistory(personId) {
+    return query(
+      `SELECT r.*, e.title, e.date_start, e.date_end, e.address, e.facecast_event_id, e.facecast_url AS event_facecast_url
+       FROM registrations r
+       JOIN events e ON e.id = r.event_id
+       WHERE r.person_id = :personId
+       ORDER BY r.created_at DESC, r.id DESC
+       LIMIT 50`,
+      { personId: Number(personId) },
+    );
+  }
+
+  async registrationPersonMessages(personId) {
+    return query(
+      `SELECT *
+       FROM chat_messages
+       WHERE person_id = :personId
+       ORDER BY created_at DESC, id DESC
+       LIMIT 12`,
+      { personId: Number(personId) },
+    );
+  }
+
+  registrationDetailsHtml(registration, history, messages) {
+    const details = [
+      this.detailItem('Телефон', registration.phone),
+      this.detailItem('Email', registration.email),
+      this.detailItem('Компания', registration.company),
+      this.detailItem('Должность', registration.position_title),
+      this.detailItem('Telegram ID', registration.telegram_id),
+    ].join('');
+    const facecastLink = String(registration.facecast_url || '').trim();
+    const facecast = [
+      this.detailItem('Facecast event id', registration.facecast_event_id),
+      this.detailItem('Персональная ссылка', facecastLink ? `<a href="${h(facecastLink)}" target="_blank" rel="noopener">Открыть ссылку</a>` : '', true),
+      this.detailItem('Уникальные минуты', this.minutesText(registration.facecast_watch_minutes)),
+      this.detailItem('Всего минут с повторами', this.minutesText(registration.facecast_total_watch_minutes)),
+      this.detailItem('Синхронизация', registration.facecast_stats_synced_at ? this.dateTime(registration.facecast_stats_synced_at) : 'еще не было'),
+    ].join('');
+
+    let body = `<div class="registration-details-profile"><div><span class="format-pill ${registration.attendance === 'offline' ? 'offline' : 'online'}">${h(registration.attendance === 'offline' ? 'офлайн' : 'онлайн')}</span><h2>${h(registration.full_name)}</h2><p>${h([registration.company, registration.position_title].filter(Boolean).join(' · '))}</p></div><a class="button button-primary" href="${h(this.messagesUrl({ personId: registration.person_id }))}">Перейти в чат</a></div>`;
+    body += `<section class="registration-details-section"><h3>Текущая регистрация</h3><div class="registration-details-grid">${this.detailItem('Мероприятие', registration.title)}${this.detailItem('Дата', this.dateTime(registration.date_start))}${this.detailItem('Статус', this.registrationStatusPlain(registration))}${this.detailItem('Создана', this.dateTime(registration.created_at))}${this.detailItem('Подтверждена', registration.approved_at ? this.dateTime(registration.approved_at) : '')}${this.detailItem('Адрес', registration.attendance === 'offline' ? registration.address : '')}</div></section>`;
+    body += `<section class="registration-details-section"><h3>Контакты</h3><div class="registration-details-grid">${details}</div></section>`;
+    if (registration.attendance === 'online' || facecastLink || registration.facecast_password) {
+      body += `<section class="registration-details-section"><h3>Facecast и просмотр</h3><div class="registration-details-grid">${facecast}</div></section>`;
+    }
+    body += `<section class="registration-details-section"><h3>Мероприятия участника</h3>${this.registrationEventsHistory(history)}</section>`;
+    body += `<section class="registration-details-section"><h3>Лог действий</h3>${this.registrationDetailsTimeline(history, messages)}</section>`;
+    return body;
+  }
+
+  detailItem(label, value, isHtml = false) {
+    const content = String(value || '').trim();
+    return `<div class="registration-detail-item"><span>${h(label)}</span><strong>${content ? (isHtml ? content : h(content)) : '<span class="muted">-</span>'}</strong></div>`;
+  }
+
+  registrationEventsHistory(history) {
+    if (history.length === 0) {
+      return '<p class="empty">Истории мероприятий пока нет.</p>';
+    }
+
+    let body = '<div class="registration-events-history">';
+    for (const row of history) {
+      body += `<article><div><strong>${h(row.title)}</strong><span>${h(this.dateTime(row.created_at))}</span></div><span>${h(row.attendance === 'offline' ? 'офлайн' : 'онлайн')}</span><span>${this.registrationStatusLabel(row)}</span><span>${h(this.facecastWatchShort(row) || '—')}</span></article>`;
+    }
+    return `${body}</div>`;
+  }
+
+  registrationDetailsTimeline(history, messages) {
+    const items = [];
+    for (const row of history) {
+      items.push({
+        date: row.created_at,
+        title: 'Регистрация',
+        text: `${row.title}: ${row.attendance === 'offline' ? 'офлайн' : 'онлайн'}, ${this.registrationStatusPlain(row)}`,
+      });
+      if (row.approved_at) {
+        items.push({
+          date: row.approved_at,
+          title: 'Подтверждение',
+          text: `${row.title}: участие подтверждено`,
+        });
+      }
+      if (row.status === 'visited') {
+        items.push({
+          date: row.updated_at,
+          title: row.attendance === 'online' ? 'Просмотр' : 'Приход',
+          text: row.attendance === 'online'
+            ? `${row.title}: ${this.facecastWatchShort(row) || 'просмотр подтвержден'}`
+            : `${row.title}: гость отмечен на ресепшне`,
+        });
+      }
+      if (row.facecast_stats_synced_at) {
+        items.push({
+          date: row.facecast_stats_synced_at,
+          title: 'Facecast',
+          text: `${row.title}: статистика просмотра обновлена`,
+        });
+      }
+    }
+    for (const message of messages) {
+      const direction = message.direction === 'out' ? 'исходящее' : 'входящее';
+      items.push({
+        date: message.created_at,
+        title: 'Сообщение',
+        text: `${direction}: ${String(message.text || this.messageTypeLabel(message.message_type) || '').slice(0, 160)}`,
+      });
+    }
+
+    items.sort((left, right) => String(right.date || '').localeCompare(String(left.date || '')));
+    if (items.length === 0) {
+      return '<p class="empty">Лог пока пуст.</p>';
+    }
+
+    let body = '<ol class="registration-details-timeline">';
+    for (const item of items.slice(0, 40)) {
+      body += `<li><span></span><div><strong>${h(item.title)}</strong><p>${h(item.text)}</p><time>${h(this.dateTime(item.date))}</time></div></li>`;
+    }
+    return `${body}</ol>`;
+  }
+
   async broadcastRecipients(audience, eventId) {
     const params = {};
+    if (audience === 'event_not_registered') {
+      if (eventId <= 0) throw new Error('Для этой аудитории нужно выбрать мероприятие');
+      return query(
+        `SELECT DISTINCT p.id, p.telegram_id, p.full_name, p.username, p.company, p.position_title, p.email,
+          NULL AS attendance, NULL AS status
+         FROM people p
+         LEFT JOIN registrations r
+          ON r.person_id = p.id
+          AND r.event_id = :eventId
+          AND r.archived_at IS NULL
+          AND r.status NOT IN ('cancelled','rejected')
+         WHERE p.consent_accepted_at IS NOT NULL
+          AND r.id IS NULL
+         ORDER BY p.id ASC
+         LIMIT 5000`,
+        { eventId },
+      );
+    }
+
     let sql = `SELECT DISTINCT p.id, p.telegram_id, p.full_name, p.username, p.company, p.position_title, p.email,
       NULL AS attendance, NULL AS status
       FROM people p`;
@@ -1977,6 +2255,27 @@ export class AdminController {
     return Object.hasOwn(this.registrationKanbanColumns(), status) ? status : 'cancelled';
   }
 
+  facecastWatchShort(row) {
+    if (!(row.attendance === 'online' || String(row.facecast_url || '').trim() || row.facecast_stats_synced_at)) {
+      return '';
+    }
+    const total = row.facecast_total_watch_minutes;
+    if (total !== null && total !== undefined && total !== '') {
+      return `Просмотр: ${Number(total)} мин всего`;
+    }
+    if (row.facecast_stats_synced_at) {
+      return 'Просмотр: минут пока нет';
+    }
+    return row.facecast_password ? 'Просмотр: не обновляли' : '';
+  }
+
+  minutesText(value) {
+    if (value === null || value === undefined || value === '') {
+      return 'нет данных';
+    }
+    return `${Number(value)} мин.`;
+  }
+
   registrationCard(row) {
     const attendance = row.attendance === 'offline' ? 'офлайн' : 'онлайн';
     const attendanceClass = row.attendance === 'offline' ? 'offline' : 'online';
@@ -1988,6 +2287,8 @@ export class AdminController {
     body += `<span class="muted">${h(this.dateTime(row.created_at))}</span></div>`;
     body += `<h3>${h(row.full_name)}</h3><p class="card-company">${h(row.company)}</p>`;
     if (row.position_title) body += `<p class="muted">${h(row.position_title)}</p>`;
+    const watch = this.facecastWatchShort(row);
+    if (watch) body += `<div class="card-watch">${h(watch)}</div>`;
     body += `<dl><div><dt>Событие</dt><dd>${h(row.title)}</dd></div><div><dt>Телефон</dt><dd>${h(row.phone)}</dd></div><div><dt>Email</dt><dd>${h(row.email)}</dd></div></dl>`;
     const actions = this.registrationActions(row);
     if (actions !== '<span class="muted">-</span>') body += `<div class="card-actions">${actions}</div>`;
@@ -2007,9 +2308,11 @@ export class AdminController {
 
   registrationTableRow(row, withActions) {
     const attendance = row.attendance === 'offline' ? 'офлайн' : 'онлайн';
-    const attendanceDetails = row.attendance === 'offline' && String(row.facecast_url || '').trim()
-      ? `${h(attendance)}<div class="muted">есть онлайн-доступ</div>`
-      : h(attendance);
+    const attendanceNotes = [];
+    if (row.attendance === 'offline' && String(row.facecast_url || '').trim()) attendanceNotes.push('есть онлайн-доступ');
+    const watch = this.facecastWatchShort(row);
+    if (watch) attendanceNotes.push(watch);
+    const attendanceDetails = `${h(attendance)}${attendanceNotes.map((note) => `<div class="muted">${h(note)}</div>`).join('')}`;
     const state = this.registrationState(row);
     let body = `<tr data-registration-row data-registration-id="${Number(row.id)}" data-status="${h(state)}" data-created-at="${h(row.created_at || '')}"><td><strong>${h(row.full_name)}</strong><div class="muted">${h(row.company)}</div><div class="muted">${h(row.email)}</div></td>`;
     body += `<td>${h(row.title)}</td><td>${attendanceDetails}</td><td>${this.registrationStatusLabel(row)}</td><td>${h(this.dateTime(row.created_at))}</td>`;
@@ -2056,18 +2359,31 @@ export class AdminController {
   }
 
   registrationActions(row) {
+    const actions = [this.registrationDetailsButton(row)];
     if (row.archived_at) {
-      return this.registrationActionForm(row, 'restore_registration', 'Восстановить', 'button button-primary', this.registrationState({ ...row, archived_at: null }));
+      actions.push(this.registrationActionForm(row, 'restore_registration', 'Восстановить', 'button button-primary', this.registrationState({ ...row, archived_at: null })));
+      return actions.join('');
     }
 
-    const actions = [];
     const ret = this.currentRegistrationsUrl();
     if (row.attendance === 'offline' && row.status === 'pending') {
       actions.push(this.registrationActionForm(row, 'approve_registration', 'Подтвердить', 'button button-primary', 'approved', ret));
       actions.push(this.registrationActionForm(row, 'reject_registration', 'Отказать', 'button danger', 'rejected', ret));
     }
+    if (this.canSyncFacecast(row)) {
+      actions.push(this.registrationActionForm(row, 'sync_facecast_registration', 'Обновить просмотр', 'button muted-button', '', ret));
+    }
     actions.push(this.registrationActionForm(row, 'archive_registration', 'В архив', 'button muted-button', 'archived', ret));
     return actions.length > 0 ? actions.join('') : '<span class="muted">-</span>';
+  }
+
+  registrationDetailsButton(row) {
+    return `<button class="button muted-button" type="button" data-registration-details="${Number(row.id)}">Карточка</button>`;
+  }
+
+  canSyncFacecast(row) {
+    return String(row.facecast_password || '').trim()
+      && (row.attendance === 'online' || String(row.facecast_url || '').trim());
   }
 
   registrationActionForm(row, action, label, buttonClass, targetStatus, returnUrl = null) {
@@ -2078,6 +2394,7 @@ export class AdminController {
   audiences() {
     return {
       all: 'Все контакты',
+      event_not_registered: 'Не участвуют в выбранном событии',
       event_all: 'Все участники события',
       event_online: 'Онлайн-участники события',
       event_offline_approved: 'Подтвержденный офлайн',
@@ -2657,7 +2974,7 @@ export class AdminController {
     const lanes = [
       ['Общий путь регистрации', 116, 356],
       ['Офлайн-гости и ресепшн', 510, 356],
-      ['Онлайн и напоминания', 904, 516],
+      ['Онлайн, записи и напоминания', 904, 690],
     ];
     const columns = [
       ['Старт', 96],
@@ -2690,7 +3007,9 @@ export class AdminController {
       online_access: this.flowNodeData('6B', 'Онлайн / запасной доступ', 'Онлайн', 2416, 942, [['Доступ к эфиру', 'Готово, вы зарегистрированы онлайн! 💻\n\nПерсональная ссылка на просмотр будет в кнопке ниже.\nНазвание: {название}\nДата: {дата}\nВремя подключения: {время старта онлайна}\n\nСохраните сообщение, а перед эфиром мы напомним о старте.'], ['Если уже есть офлайн', 'Вы остаётесь в списке офлайн-гостей 🏢\n\nЗапасная персональная ссылка на эфир будет в кнопке ниже.\n\nГлавным вариантом оставляем офлайн-встречу, а ссылку держите как запасной доступ.']], ['Персональная ссылка на эфир', 'Напомнить доступ']),
       reminders: this.flowNodeData('8', 'Напоминания', 'Автоматизация', 2880, 942, [['Офлайн за день', 'Напоминаем о встрече завтра 🏢'], ['Офлайн за 2 часа', 'До офлайн-встречи осталось около двух часов 🙂\n\nЛучше прийти спокойно, чем соревноваться с городским трафиком.'], ['Онлайн за 15 минут', 'Напоминаем про эфир 💻\n\nНачинаем через 15 минут. Можно налить чай и открыть ссылку заранее.'], ['Онлайн старт', 'Мы начали! 💻\n\nДобро пожаловать в прямой эфир. Задавайте вопросы спикерам в чате трансляции.']], ['Открыть эфир', 'Не смогу офлайн']),
       creative_brief: this.flowNodeData('C1', 'Идея креатива', 'Креативы', 1024, 942, [['Запрос мини-брифа', 'Давайте найдём идею для вашей задачи 💡\n\nОпишите её в нескольких предложениях: что за проект, для кого он, какую цель решаем, где будет жить креатив, какой тон нужен, какие есть сроки и ограничения.'], ['После ответа пользователя', 'Спасибо, заявка на идею принята 💡\n\nМенеджер посмотрит задачу и свяжется с вами здесь: пришлёт первые мысли, материалы или задаст уточняющие вопросы.']], ['Описать задачу', 'Менеджер отвечает']),
-      menu: this.flowNodeData('10', 'Главное меню', 'Навигация', 1488, 942, [['Главное меню', 'Выберите действие на клавиатуре ниже 🙂'], ['Соцсети', 'Мы рядом\n\nНовости, анонсы и материалы публикуем в канале и на сайте.']], ['Телеграм канал', 'Сайт', 'Ближайшие мероприятия', 'Получить идею']),
+      recordings_archive: this.flowNodeData('R1', 'Записи эфиров', 'Архив', 1952, 1268, [['Список записей', 'Записи эфиров 🎬\n\nВыберите трансляцию. Мы оформим доступ и пришлём ссылку на просмотр записи.'], ['Если архива нет', 'Архив эфиров пока пуст.\n\nЗаписи появляются здесь после завершения трансляций и доступны в течение 6 месяцев.']], ['Выбрать запись', 'Главное меню']),
+      recording_access: this.flowNodeData('R2', 'Доступ к записи', 'Архив', 2416, 1268, [['Карточка записи', 'Запись эфира\n\nНазвание: {название}\nДата эфира: {дата}\nДоступ: 6 месяцев после эфира\n\nНажмите кнопку ниже, и мы подготовим вашу ссылку на просмотр записи.'], ['Ссылка готова', 'Доступ к записи готов 🎬\n\nСсылка на просмотр записи готова.\n\nНазвание: {название}\nДата эфира: {дата}\nСрок доступа: 6 месяцев после эфира\n\nСохраните это сообщение, чтобы вернуться к просмотру в удобное время.']], ['Смотреть запись']),
+      menu: this.flowNodeData('10', 'Главное меню', 'Навигация', 1488, 942, [['Главное меню', 'Выберите действие на клавиатуре ниже 🙂'], ['Соцсети', 'Мы рядом\n\nНовости, анонсы и материалы публикуем в канале и на сайте.']], ['Телеграм канал', 'Сайт', 'Ближайшие мероприятия', 'Записи эфиров', 'Получить идею']),
     };
   }
 
@@ -2709,6 +3028,8 @@ export class AdminController {
       ['format_choice', 'online_access', 'Смотреть онлайн', 'bottom', 'left', [[2102, 852], [2292, 852], [2292, 1085]]],
       ['events', 'menu', 'Главное меню', 'bottom', 'top', [], { labelSide: 'right' }],
       ['menu', 'creative_brief', 'Получить идею', 'left', 'right'],
+      ['menu', 'recordings_archive', 'Записи эфиров', 'bottom', 'top', [[1638, 1238], [2102, 1238]], { labelSide: 'below' }],
+      ['recordings_archive', 'recording_access', 'Получить ссылку'],
       ['offline_pending', 'offline_approved', 'Подтвердить', 'bottom', 'top', [], { labelSide: 'right' }],
       ['offline_pending', 'offline_rejected', 'Отказ'],
       ['offline_rejected', 'online_access', 'Буду онлайн', 'bottom', 'top', [[3030, 866], [2566, 866]], { labelSide: 'above' }],
@@ -2868,6 +3189,18 @@ export class AdminController {
       const stage = this.flowStageForRow(row);
       const label = this.flowPersonLabel(row);
       if (!users[stage].includes(label)) users[stage].push(label);
+    }
+    const recordingRows = await query(
+      `SELECT p.id AS person_id, p.full_name, p.username, e.title AS event_title
+       FROM recording_accesses ra
+       JOIN people p ON p.id = ra.person_id
+       JOIN events e ON e.id = ra.event_id
+       ORDER BY ra.created_at DESC
+       LIMIT 200`,
+    );
+    for (const row of recordingRows) {
+      const label = this.flowPersonLabel(row);
+      if (!users.recording_access.includes(label)) users.recording_access.push(label);
     }
     return users;
   }

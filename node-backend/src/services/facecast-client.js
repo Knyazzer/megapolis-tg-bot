@@ -159,6 +159,57 @@ export class FacecastClient {
     });
   }
 
+  async viewerActivity(event, registration) {
+    const rows = await this.eventActivity(event);
+    return this.viewerActivityFromRows(rows, registration);
+  }
+
+  async eventActivity(event) {
+    if (this.shouldUseDemoCredentials()) {
+      return [];
+    }
+
+    const eventId = String(event.facecast_event_id || event.event_id || '').trim();
+    const eventCode = !eventId ? String(event.slug || '').trim() : '';
+    if (!eventId && !eventCode) {
+      throw new FacecastApiError('Facecast event_id or event_code is empty');
+    }
+
+    const body = {
+      uid: config.facecast.uid,
+      api_key: config.facecast.apiKey,
+    };
+    if (eventId) body.event_id = eventId;
+    else body.event_code = eventCode;
+
+    const response = await this.postForm('get_user_activity', body);
+    return this.extractActivityRows(response);
+  }
+
+  viewerActivityFromRows(rows, registration) {
+    const password = String(registration.facecast_password || '').trim();
+    if (!password) {
+      throw new FacecastApiError('Facecast viewer password is empty');
+    }
+
+    const row = rows.find((item) => String(item?.password || '').trim() === password);
+    if (!row) {
+      return {
+        found: false,
+        activity: null,
+        watchMinutes: null,
+        totalWatchMinutes: null,
+      };
+    }
+
+    return {
+      found: true,
+      activity: this.numberOrNull(row.activity),
+      watchMinutes: this.numberOrNull(row.minutes_watched),
+      totalWatchMinutes: this.numberOrNull(row.minutes_total_watched),
+    };
+  }
+
   async postForm(endpoint, body, { duplicateIsSuccess = false, referer = '' } = {}) {
     const url = this.endpointUrl(endpoint);
     const controller = new AbortController();
@@ -364,6 +415,30 @@ export class FacecastClient {
       return false;
     }
     return true;
+  }
+
+  extractActivityRows(response) {
+    if (Array.isArray(response)) {
+      return response;
+    }
+    if (Array.isArray(response?.data)) {
+      return response.data;
+    }
+    if (Array.isArray(response?.result)) {
+      return response.result;
+    }
+    if (Array.isArray(response?.items)) {
+      return response.items;
+    }
+    return [];
+  }
+
+  numberOrNull(value) {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.max(0, Math.round(number)) : null;
   }
 
   viewerPassword(event, person) {
