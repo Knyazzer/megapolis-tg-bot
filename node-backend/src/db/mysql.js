@@ -225,9 +225,28 @@ function ensureSqliteSchema(database) {
       facecast_password TEXT NULL,
       facecast_ticket_id TEXT NULL,
       facecast_url TEXT NULL,
+      facecast_watch_minutes INTEGER NULL,
+      facecast_total_watch_minutes INTEGER NULL,
+      facecast_stats_synced_at TEXT NULL,
       rejection_reason TEXT NULL,
       approved_at TEXT NULL,
       archived_at TEXT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (person_id, event_id),
+      FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE CASCADE,
+      FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS recording_accesses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      person_id INTEGER NOT NULL,
+      event_id INTEGER NOT NULL,
+      source TEXT NOT NULL DEFAULT 'facecast',
+      facecast_login TEXT NULL,
+      facecast_password TEXT NULL,
+      facecast_ticket_id TEXT NULL,
+      facecast_url TEXT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       UNIQUE (person_id, event_id),
@@ -306,6 +325,8 @@ function ensureSqliteSchema(database) {
 
     CREATE INDEX IF NOT EXISTS idx_chat_person_created ON chat_messages (person_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_chat_created ON chat_messages (created_at);
+    CREATE INDEX IF NOT EXISTS idx_recording_access_event ON recording_accesses (event_id);
+    CREATE INDEX IF NOT EXISTS idx_recording_access_source ON recording_accesses (source);
 
     CREATE TABLE IF NOT EXISTS bot_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -318,6 +339,9 @@ function ensureSqliteSchema(database) {
 
   ensureSqliteColumn(database, 'registrations', 'archived_at', 'TEXT NULL');
   ensureSqliteColumn(database, 'registrations', 'facecast_ticket_id', 'TEXT NULL');
+  ensureSqliteColumn(database, 'registrations', 'facecast_watch_minutes', 'INTEGER NULL');
+  ensureSqliteColumn(database, 'registrations', 'facecast_total_watch_minutes', 'INTEGER NULL');
+  ensureSqliteColumn(database, 'registrations', 'facecast_stats_synced_at', 'TEXT NULL');
   ensureSqliteColumn(database, 'people', 'chat_mode', "TEXT NOT NULL DEFAULT 'bot'");
   ensureSqliteColumn(database, 'people', 'chat_mode_updated_at', 'TEXT NULL');
   ensureSqliteColumn(database, 'people', 'chat_read_at', 'TEXT NULL');

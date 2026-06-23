@@ -1163,6 +1163,76 @@
 
   initEventLocationWidget();
 
+  function initRegistrationDetailsModal() {
+    var workspace = document.querySelector('.registrations-workspace');
+    if (!workspace || !window.fetch) {
+      return;
+    }
+
+    var modal = document.createElement('div');
+    modal.className = 'registration-modal';
+    modal.hidden = true;
+    modal.setAttribute('aria-hidden', 'true');
+    modal.innerHTML = '<div class="registration-modal-backdrop" data-registration-modal-close></div><section class="registration-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="registration-modal-title"><button class="registration-modal-close" type="button" data-registration-modal-close aria-label="Закрыть">×</button><div class="registration-modal-body"><span class="muted">Загрузка...</span></div></section>';
+    document.body.appendChild(modal);
+
+    var body = modal.querySelector('.registration-modal-body');
+
+    function closeModal() {
+      modal.hidden = true;
+      modal.setAttribute('aria-hidden', 'true');
+      document.body.classList.remove('modal-open');
+    }
+
+    function openModal(id) {
+      body.innerHTML = '<span class="muted">Загрузка карточки...</span>';
+      modal.hidden = false;
+      modal.setAttribute('aria-hidden', 'false');
+      document.body.classList.add('modal-open');
+      fetch('/?action=registration_details&id=' + encodeURIComponent(id), {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      }).then(function (response) {
+        if (!response.ok) {
+          throw new Error('request failed');
+        }
+        return response.json();
+      }).then(function (payload) {
+        if (!payload || payload.ok !== true) {
+          throw new Error((payload && payload.error) || 'request failed');
+        }
+        body.innerHTML = payload.html || '<p class="empty">Нет данных.</p>';
+        var close = modal.querySelector('.registration-modal-close');
+        if (close) {
+          close.focus();
+        }
+      }).catch(function () {
+        body.innerHTML = '<p class="notice notice-error">Не получилось открыть карточку. Попробуйте обновить страницу.</p>';
+      });
+    }
+
+    document.addEventListener('click', function (event) {
+      var button = event.target.closest('[data-registration-details]');
+      if (!button) {
+        return;
+      }
+      event.preventDefault();
+      openModal(button.getAttribute('data-registration-details'));
+    });
+
+    modal.querySelectorAll('[data-registration-modal-close]').forEach(function (button) {
+      button.addEventListener('click', closeModal);
+    });
+
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && !modal.hidden) {
+        closeModal();
+      }
+    });
+  }
+
+  initRegistrationDetailsModal();
+
   var modal = document.querySelector('.flow-modal');
   if (!modal) {
     return;

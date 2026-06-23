@@ -1,7 +1,7 @@
 import { query, queryOne } from '../db/mysql.js';
 import { FacecastClient } from '../services/facecast-client.js';
 import { TelegramClient } from '../services/telegram-client.js';
-import { dateShort, nowSql, shiftDate, timeOnly, timeRange } from '../utils/dates.js';
+import { dateShort, formatSqlDate, nowSql, shiftDate, timeOnly, timeRange } from '../utils/dates.js';
 import { h } from '../utils/html.js';
 import { logger } from '../utils/logger.js';
 
@@ -14,7 +14,74 @@ export async function processDueMessages({ limit = 50, broadcastCampaignId = nul
     ? { picked: 0, sent: 0, skipped: 0, failed: 0 }
     : await processScheduledMessages(telegram, safeLimit);
   const broadcasts = await processBroadcastMessages(telegram, Math.max(safeLimit, 60), broadcastCampaignId);
-  return { scheduled, broadcasts };
+  const facecastStats = broadcastCampaignId
+    ? { picked: 0, updated: 0, visited: 0, failed: 0 }
+    : await syncFacecastWatchStats(Math.min(safeLimit, 20));
+  return { scheduled, broadcasts, facecastStats };
+}
+
+async function syncFacecastWatchStats(limit) {
+  const rowLimit = sqlLimit(limit);
+  const now = nowSql();
+  const staleBefore = formatSqlDate(shiftDate(now, -60 * 60 * 1000));
+  const rows = await query(
+    `SELECT r.*, e.facecast_event_id, e.slug, e.title, e.date_start
+     FROM registrations r
+     JOIN events e ON e.id = r.event_id
+     WHERE r.attendance = 'online'
+       AND r.archived_at IS NULL
+       AND r.facecast_password IS NOT NULL
+       AND r.facecast_password != ''
+       AND r.status NOT IN ('rejected','cancelled')
+       AND e.date_start <= :now
+       AND (r.facecast_stats_synced_at IS NULL OR r.facecast_stats_synced_at <= :staleBefore)
+     ORDER BY r.facecast_stats_synced_at IS NULL DESC, r.created_at DESC
+     LIMIT ${rowLimit}`,
+    { now, staleBefore },
+  );
+
+  let updated = 0;
+  let visited = 0;
+  let failed = 0;
+  const activitiesByEvent = new Map();
+
+  for (const row of rows) {
+    try {
+      const eventKey = String(row.facecast_event_id || row.slug || row.event_id);
+      if (!activitiesByEvent.has(eventKey)) {
+        activitiesByEvent.set(eventKey, await facecast.eventActivity(row));
+      }
+      const activity = facecast.viewerActivityFromRows(activitiesByEvent.get(eventKey), row);
+      const hasWatched = Number(activity.totalWatchMinutes || 0) > 0;
+      await query(
+        `UPDATE registrations
+         SET facecast_watch_minutes = :watchMinutes,
+          facecast_total_watch_minutes = :totalWatchMinutes,
+          facecast_stats_synced_at = :now,
+          status = CASE WHEN :hasWatched = 1 THEN 'visited' ELSE status END,
+          updated_at = :now
+         WHERE id = :id`,
+        {
+          id: row.id,
+          watchMinutes: activity.watchMinutes,
+          totalWatchMinutes: activity.totalWatchMinutes,
+          hasWatched: hasWatched ? 1 : 0,
+          now,
+        },
+      );
+      updated += 1;
+      if (hasWatched) visited += 1;
+    } catch (error) {
+      failed += 1;
+      logger.warn('facecast watch stats sync failed', {
+        registrationId: row.id,
+        eventId: row.event_id,
+        message: error.message,
+      });
+    }
+  }
+
+  return { picked: rows.length, updated, visited, failed };
 }
 
 async function processScheduledMessages(telegram, limit) {
@@ -85,7 +152,7 @@ async function processBroadcastMessages(telegram, limit, campaignId = null) {
   const rowLimit = sqlLimit(limit);
   const campaignFilter = Number(campaignId || 0) > 0 ? 'AND bm.campaign_id = :campaignId' : '';
   const rows = await query(
-    `SELECT bm.*, c.content_type, c.body, c.media_file_id, c.media_mime, c.media_name, c.media_size, c.id AS campaign_id
+    `SELECT bm.*, c.audience, c.event_id, c.content_type, c.body, c.media_file_id, c.media_mime, c.media_name, c.media_size, c.id AS campaign_id
      FROM broadcast_messages bm
      JOIN broadcast_campaigns c ON c.id = bm.campaign_id
      WHERE bm.status = 'queued'
@@ -105,22 +172,24 @@ async function processBroadcastMessages(telegram, limit, campaignId = null) {
     try {
       let telegramResult = null;
       const media = await broadcastMedia(row, cachedMediaFileIds, cachedMediaUploads);
+      const replyMarkup = broadcastReplyMarkup(row);
+      const hasBody = String(row.body || '').trim() !== '';
       if (row.content_type === 'video_note' && media) {
-        telegramResult = await telegram.sendVideoNote(Number(row.telegram_id), media);
+        telegramResult = await telegram.sendVideoNote(Number(row.telegram_id), media, hasBody ? {} : replyMarkup);
       } else if (row.content_type === 'photo' && media) {
         const caption = telegramMediaCaption(row.body);
-        telegramResult = await telegram.sendPhoto(Number(row.telegram_id), media, caption);
+        telegramResult = await telegram.sendPhoto(Number(row.telegram_id), media, caption, caption || !hasBody ? replyMarkup : {});
         if (caption) row.body = '';
       } else if (row.content_type === 'video' && media) {
         const caption = telegramMediaCaption(row.body);
-        telegramResult = await telegram.sendVideo(Number(row.telegram_id), media, caption);
+        telegramResult = await telegram.sendVideo(Number(row.telegram_id), media, caption, caption || !hasBody ? replyMarkup : {});
         if (caption) row.body = '';
       }
 
       await rememberTelegramFileId(row, telegramResult, cachedMediaFileIds);
 
       if (String(row.body || '').trim() !== '') {
-        await telegram.sendMessage(Number(row.telegram_id), String(row.body));
+        await telegram.sendMessage(Number(row.telegram_id), String(row.body), replyMarkup);
       }
 
       await query(
@@ -226,6 +295,24 @@ function defaultBroadcastMime(contentType) {
 function telegramMediaCaption(text) {
   const caption = String(text || '').trim();
   return caption.length > 0 && caption.length <= 900 ? caption : '';
+}
+
+function broadcastReplyMarkup(row) {
+  if (String(row.audience || '') !== 'event_not_registered') {
+    return {};
+  }
+
+  const eventId = Number(row.event_id || 0);
+  if (eventId <= 0) {
+    return {};
+  }
+
+  return {
+    inline_keyboard: [
+      [{ text: 'Выбрать формат участия', callback_data: `event:${eventId}` }],
+      [{ text: 'Главное меню', callback_data: 'main_menu' }],
+    ],
+  };
 }
 
 function sqlLimit(limit) {
