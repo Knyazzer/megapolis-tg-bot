@@ -1,7 +1,7 @@
 import { query, queryOne } from '../db/mysql.js';
 import { FacecastClient } from '../services/facecast-client.js';
 import { TelegramClient } from '../services/telegram-client.js';
-import { dateShort, nowSql, timeOnly, timeRange } from '../utils/dates.js';
+import { dateShort, nowSql, shiftDate, timeOnly, timeRange } from '../utils/dates.js';
 import { h } from '../utils/html.js';
 import { logger } from '../utils/logger.js';
 
@@ -34,21 +34,25 @@ async function processScheduledMessages(telegram, limit) {
        e.title,
        e.date_start,
        e.date_end,
+       e.guest_arrival_at,
        e.online_start,
        e.address,
        e.facecast_event_id,
        e.facecast_url AS event_facecast_url,
        e.recording_url,
-       e.photo_album_url
+       e.photo_album_url,
+       e.postpromo_message,
+       e.postpromo_send_at
      FROM scheduled_messages sm
      JOIN people p ON p.id = sm.person_id
      LEFT JOIN registrations r ON r.id = sm.registration_id
      LEFT JOIN events e ON e.id = sm.event_id
      WHERE sm.sent_at IS NULL
        AND sm.failed_at IS NULL
-       AND sm.send_at <= CURRENT_TIMESTAMP
+       AND sm.send_at <= :now
      ORDER BY sm.send_at ASC
      LIMIT ${rowLimit}`,
+    { now: nowSql() },
   );
 
   let sent = 0;
@@ -237,12 +241,12 @@ function scheduledMessageIsStale(row) {
   const attendance = String(row.attendance || '');
   const status = String(row.status || '');
 
-  if (type === 'postpromo') {
+  if (row.archived_at) {
     return true;
   }
 
-  if (row.archived_at) {
-    return true;
+  if (type === 'postpromo') {
+    return !String(row.postpromo_message || '').trim() || !['approved', 'visited'].includes(status);
   }
 
   if (['cancelled', 'rejected', 'no_show'].includes(status)) {
@@ -265,6 +269,7 @@ function scheduledMessagePayload(row) {
   const eventTitle = String(row.title || 'мероприятие');
   const date = dateShort(row.date_start);
   const range = timeRange(row.date_start, row.date_end);
+  const arrival = offlineArrivalTime(row);
   const registrationId = Number(row.registration_id);
 
   if (row.type === 'offline_1day') {
@@ -274,6 +279,7 @@ function scheduledMessagePayload(row) {
         + `<b>Название:</b> ${h(eventTitle)}\n`
         + `<b>Дата:</b> ${h(date)}\n`
         + `<b>Время:</b> ${h(range)}\n`
+        + `<b>Сбор гостей:</b> ${h(arrival)}\n`
         + `<b>Адрес:</b> ${h(row.address || '')}\n`
         + '<b>Формат:</b> офлайн',
       confirmKeyboard(registrationId),
@@ -287,6 +293,7 @@ function scheduledMessagePayload(row) {
         + `<b>Название:</b> ${h(eventTitle)}\n`
         + `<b>Дата:</b> ${h(date)}\n`
         + `<b>Время:</b> ${h(range)}\n`
+        + `<b>Сбор гостей:</b> ${h(arrival)}\n`
         + `<b>Адрес:</b> ${h(row.address || '')}\n`
         + '<b>Формат:</b> офлайн',
       confirmKeyboard(registrationId),
@@ -311,7 +318,16 @@ function scheduledMessagePayload(row) {
     ];
   }
 
+  if (row.type === 'postpromo') {
+    return [h(row.postpromo_message), {}];
+  }
+
   return [`Напоминание о мероприятии: ${h(eventTitle)} в ${h(timeOnly(row.date_start))}`, {}];
+}
+
+function offlineArrivalTime(row) {
+  const value = String(row.guest_arrival_at || '').trim();
+  return timeOnly(value || shiftDate(row.date_start, -30 * 60 * 1000));
 }
 
 function validPersonalFacecastUrl(row) {

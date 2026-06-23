@@ -65,6 +65,13 @@ export class ChatRepository {
       { personId, now: nowSql() },
     );
   }
+
+  async markRead(personId) {
+    await execute(
+      'UPDATE people SET chat_read_at = :now, updated_at = :now WHERE id = :personId',
+      { personId, now: nowSql() },
+    );
+  }
 }
 
 function normalizeChatText(text) {

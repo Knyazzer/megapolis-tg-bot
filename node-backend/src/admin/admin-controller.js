@@ -11,7 +11,7 @@ import {
 import { ChatRepository } from '../repositories/chat-repository.js';
 import { ReminderPlanner } from '../services/reminder-planner.js';
 import { TelegramClient } from '../services/telegram-client.js';
-import { dateShort, formatSqlDate, nowSql, parseDate, timeOnly, timeRange } from '../utils/dates.js';
+import { dateShort, formatSqlDate, nowSql, parseDate, shiftDate, timeOnly, timeRange } from '../utils/dates.js';
 import { h } from '../utils/html.js';
 import { logger } from '../utils/logger.js';
 import { attemptLogin, csrfField, destroySession, verifyCsrf } from './admin-auth.js';
@@ -31,6 +31,8 @@ const BROADCAST_UPLOAD_LIMITS = {
 };
 const DIRECT_PHOTO_UPLOAD_LIMIT = 10 * 1024 * 1024;
 const DIRECT_IMAGE_UPLOAD_LIMIT = 50 * 1024 * 1024;
+const OFFLINE_NOTIFICATION_TYPES = ['offline_1day', 'offline_2hours', 'offline_started'];
+const ONLINE_NOTIFICATION_TYPES = ['online_15min', 'online_started'];
 
 export class AdminController {
   constructor({ session, response }) {
@@ -69,6 +71,10 @@ export class AdminController {
 
     if (action === 'messages_feed') {
       return this.messagesFeedJson(url);
+    }
+
+    if (action === 'messages_people') {
+      return this.messagesPeopleJson(url);
     }
 
     const page = String(url.searchParams.get('page') || 'registrations');
@@ -223,6 +229,7 @@ export class AdminController {
       description: '',
       date_start: '',
       date_end: '',
+      guest_arrival_at: '',
       online_start: '',
       address: '',
       venue_lat: '',
@@ -232,6 +239,13 @@ export class AdminController {
       facecast_url: '',
       recording_url: '',
       photo_album_url: '',
+      postpromo_message: '',
+      postpromo_send_at: '',
+      offline_1day_send_at: '',
+      offline_2hours_send_at: '',
+      offline_started_send_at: '',
+      online_15min_send_at: '',
+      online_started_send_at: '',
       is_active: 1,
     };
     const event = id > 0 ? (await queryOne('SELECT * FROM events WHERE id = :id LIMIT 1', { id })) || blank : blank;
@@ -239,18 +253,28 @@ export class AdminController {
     body += '<form method="post" class="form-grid">';
     body += `${csrfField(this.session)}<input type="hidden" name="action" value="save_event"><input type="hidden" name="_return" value="/?page=events"><input type="hidden" name="id" value="${Number(event.id)}">`;
     body += this.input('Название', 'title', event.title, true);
-    body += this.input('Slug', 'slug', event.slug, true);
     body += this.textarea('Описание для бота', 'description', event.description);
-    body += this.input('Начало', 'date_start', this.datetimeLocal(event.date_start), true, 'datetime-local');
-    body += this.input('Окончание', 'date_end', this.datetimeLocal(event.date_end), true, 'datetime-local');
+    body += this.eventTimeWidget(event);
     body += this.input('Старт онлайна', 'online_start', this.datetimeLocal(event.online_start), false, 'datetime-local');
-    body += this.input('Адрес', 'address', event.address);
-    body += `<div class="form-row two">${this.input('Широта', 'venue_lat', event.venue_lat, false, 'text', true)}${this.input('Долгота', 'venue_lng', event.venue_lng, false, 'text', true)}</div>`;
+    body += `<div class="event-location-widget" data-event-location-widget>
+      <div class="event-location-address">
+        <label>Адрес<input type="text" name="address" value="${h(event.address ?? '')}" data-location-address></label>
+        <button class="button" type="button" data-location-geocode>Найти на карте</button>
+      </div>
+      <input type="hidden" name="venue_lat" value="${h(event.venue_lat ?? '')}">
+      <input type="hidden" name="venue_lng" value="${h(event.venue_lng ?? '')}">
+      <div class="event-location-map" data-location-map></div>
+      <p class="event-location-status muted" data-location-status>Введите адрес или поставьте точку кликом на карте.</p>
+    </div>`;
     body += this.input('Лимит офлайн-мест', 'offline_capacity', event.offline_capacity, false, 'number');
     body += this.input('Facecast event id', 'facecast_event_id', event.facecast_event_id);
     body += this.input('Ссылка Facecast', 'facecast_url', event.facecast_url, false, 'url');
     body += this.input('Запись эфира', 'recording_url', event.recording_url, false, 'url');
-    body += this.input('Фотоальбом', 'photo_album_url', event.photo_album_url, false, 'url');
+    body += `<div class="event-postpromo-widget">
+      <label>Постпромо сообщение<textarea name="postpromo_message" rows="5" placeholder="Сообщение, которое отправим участникам после мероприятия">${h(event.postpromo_message ?? '')}</textarea></label>
+      ${this.input('Дата и время отправки постпромо', 'postpromo_send_at', this.datetimeLocal(event.postpromo_send_at), false, 'datetime-local')}
+    </div>`;
+    body += await this.eventNotificationScheduleWidget(event);
     body += `<label class="check"><input type="checkbox" name="is_active" value="1" ${Number(event.is_active) === 1 ? 'checked' : ''}> Активно</label>`;
     return `${body}<div class="actions"><button class="button button-primary" type="submit">Сохранить</button><a class="button" href="/?page=events">Назад</a></div></form></section>`;
   }
@@ -280,27 +304,23 @@ export class AdminController {
 
   async messagesPage(url) {
     const q = String(url.searchParams.get('q') || '').trim().slice(0, 80);
-    const people = await this.messagePeople(q);
+    let people = await this.messagePeople(q);
     const requestedPersonId = Number(url.searchParams.get('person_id') || 0);
     const selectedPersonId = requestedPersonId > 0 ? requestedPersonId : Number(people[0]?.id || 0);
     const selectedPerson = selectedPersonId > 0
       ? await queryOne('SELECT * FROM people WHERE id = :id LIMIT 1', { id: selectedPersonId })
       : null;
+    if (selectedPerson) {
+      await this.chat.markRead(selectedPerson.id);
+      people = await this.messagePeople(q);
+    }
     const messages = selectedPerson ? await this.chatMessages(selectedPerson.id) : [];
 
     let body = '<section class="panel messages-workspace">';
-    body += '<aside class="messages-sidebar">';
-    body += '<div class="messages-sidebar-head"><h2>Общение</h2><span class="muted">Личные сообщения через бота</span></div>';
+    body += `<aside class="messages-sidebar" data-messages-sidebar data-selected-person-id="${Number(selectedPersonId || 0)}">`;
+    body += `<div class="messages-sidebar-head"><h2>Общение</h2><span class="muted" data-messages-total>${h(this.messagesTotalLabel(people.length))}</span></div>`;
     body += `<form class="messages-search" method="get"><input type="hidden" name="page" value="messages"><input name="q" value="${h(q)}" placeholder="Найти человека"><button class="button" type="submit">Найти</button></form>`;
-    body += '<div class="messages-people-list">';
-    if (people.length === 0) {
-      body += '<p class="empty">Людей не нашли.</p>';
-    } else {
-      for (const person of people) {
-        body += this.messagePersonLink(person, selectedPersonId, q);
-      }
-    }
-    body += '</div></aside>';
+    body += `<div class="messages-people-list" data-messages-people-list>${this.messagePeopleListHtml(people, selectedPersonId, q)}</div></aside>`;
 
     body += '<div class="messages-dialog">';
     if (!selectedPerson) {
@@ -342,13 +362,32 @@ export class AdminController {
       `SELECT p.*,
         (SELECT MAX(cm.created_at) FROM chat_messages cm WHERE cm.person_id = p.id) AS last_message_at,
         (SELECT cm.text FROM chat_messages cm WHERE cm.person_id = p.id ORDER BY cm.created_at DESC, cm.id DESC LIMIT 1) AS last_message_text,
-        (SELECT cm.direction FROM chat_messages cm WHERE cm.person_id = p.id ORDER BY cm.created_at DESC, cm.id DESC LIMIT 1) AS last_message_direction
+        (SELECT cm.direction FROM chat_messages cm WHERE cm.person_id = p.id ORDER BY cm.created_at DESC, cm.id DESC LIMIT 1) AS last_message_direction,
+        (SELECT cm.message_type FROM chat_messages cm WHERE cm.person_id = p.id ORDER BY cm.created_at DESC, cm.id DESC LIMIT 1) AS last_message_type,
+        CASE
+          WHEN p.chat_mode = 'human' THEN (
+            SELECT COUNT(*)
+            FROM chat_messages cm
+            WHERE cm.person_id = p.id
+              AND cm.direction = 'in'
+              AND (p.chat_read_at IS NULL OR cm.created_at > p.chat_read_at)
+          )
+          ELSE 0
+        END AS unread_messages
        FROM people p
        ${whereSql}
        ORDER BY COALESCE(last_message_at, p.last_seen_at, p.created_at) DESC, p.id DESC
        LIMIT 200`,
       params,
     );
+  }
+
+  messagePeopleListHtml(people, selectedPersonId, q) {
+    if (people.length === 0) {
+      return '<p class="empty">Людей не нашли.</p>';
+    }
+
+    return people.map((person) => this.messagePersonLink(person, selectedPersonId, q)).join('');
   }
 
   async chatMessages(personId) {
@@ -393,6 +432,9 @@ export class AdminController {
     }
 
     const messages = await this.chatMessagesAfter(personId, afterId);
+    if (messages.length > 0) {
+      await this.chat.markRead(personId);
+    }
     return json({
       ok: true,
       personId,
@@ -401,6 +443,19 @@ export class AdminController {
         id: Number(message.id),
         html: this.chatMessageBubble(message),
       })),
+    });
+  }
+
+  async messagesPeopleJson(url) {
+    const q = String(url.searchParams.get('q') || '').trim().slice(0, 80);
+    const selectedPersonId = Number(url.searchParams.get('person_id') || 0);
+    const people = await this.messagePeople(q);
+    return json({
+      ok: true,
+      total: people.length,
+      totalLabel: this.messagesTotalLabel(people.length),
+      unreadTotal: people.reduce((sum, person) => sum + Number(person.unread_messages || 0), 0),
+      html: this.messagePeopleListHtml(people, selectedPersonId, q),
     });
   }
 
@@ -413,10 +468,12 @@ export class AdminController {
     const name = this.personDisplayName(person);
     const username = person.username ? `@${person.username}` : `ID ${person.telegram_id}`;
     const last = String(person.last_message_text || '').trim();
-    const direction = person.last_message_direction === 'out' ? 'Вы: ' : '';
     const href = this.messagesUrl({ personId: person.id, q });
     const mode = String(person.chat_mode || 'bot') === 'human' ? '<b>человек</b>' : '<b class="muted-mode">бот</b>';
-    return `<a class="message-person ${active ? 'active' : ''}" href="${h(href)}"><strong>${h(name)}${mode}</strong><span>${h(username)}</span><em>${last ? h(`${direction}${last}`) : 'Нет личных сообщений'}</em></a>`;
+    const unread = Number(person.unread_messages || 0);
+    const unreadBadge = unread > 0 ? `<i class="message-unread">${unread > 99 ? '99+' : unread}</i>` : '';
+    const preview = last ? `${this.messagePreviewPrefix(person.last_message_direction, person.last_message_type)}${last}` : 'Нет сообщений';
+    return `<a class="message-person ${active ? 'active' : ''}" href="${h(href)}" data-person-id="${Number(person.id)}"><span class="message-person-top"><strong>${h(name)}</strong><span class="message-person-state">${mode}${unreadBadge}</span></span><span class="message-person-meta">${h(username)}</span><em>${h(preview)}</em></a>`;
   }
 
   messagesDialogHeader(person) {
@@ -439,14 +496,15 @@ export class AdminController {
     const direction = message.direction === 'out' ? 'out' : 'in';
     const status = String(message.status || '');
     const text = String(message.text || '').trim() || this.messageTypeLabel(message.message_type);
-    let body = `<article class="chat-bubble ${h(direction)} ${status === 'failed' ? 'failed' : ''}">`;
+    const messageType = String(message.message_type || 'text');
+    let body = `<article class="chat-bubble ${h(direction)} ${status === 'failed' ? 'failed' : ''} ${messageType.startsWith('bot') ? 'bot' : ''}">`;
     if (message.media_file_id) {
       body += `<div class="chat-media-chip">${h(this.messageTypeLabel(message.message_type))}${message.media_name ? ` · ${h(message.media_name)}` : ''}</div>`;
     }
     body += `<div class="chat-bubble-text">${this.multilineHtml(text)}</div>`;
     body += '<footer>';
-    body += `<span>${h(direction === 'out' ? 'Вы' : 'Пользователь')}</span>`;
-    if (message.message_type && message.message_type !== 'text') body += `<span>${h(this.messageTypeLabel(message.message_type))}</span>`;
+    body += `<span>${h(this.chatMessageAuthor(message))}</span>`;
+    if (message.message_type && !['text', 'bot'].includes(message.message_type)) body += `<span>${h(this.messageTypeLabel(message.message_type))}</span>`;
     if (status === 'failed') body += '<span class="danger-text">ошибка</span>';
     body += `<time>${h(this.dateTime(message.created_at))}</time>`;
     body += '</footer>';
@@ -455,7 +513,10 @@ export class AdminController {
   }
 
   directMessageForm(person, q) {
-    return `<form method="post" enctype="multipart/form-data" class="direct-message-form">${csrfField(this.session)}<input type="hidden" name="action" value="send_direct_message"><input type="hidden" name="_return" value="${h(this.messagesUrl({ personId: person.id, q }))}"><input type="hidden" name="person_id" value="${Number(person.id)}"><div class="direct-message-fields"><textarea name="text" rows="3" placeholder="Написать личное сообщение"></textarea><label class="direct-photo-field">Картинка<span class="field-caption">до 50 МБ</span><input type="file" name="media_upload" accept="image/*" data-max-file-size="${DIRECT_IMAGE_UPLOAD_LIMIT}"></label></div><button class="button button-primary" type="submit">Отправить</button></form>`;
+    const isHuman = String(person.chat_mode || 'bot') === 'human';
+    const disabled = isHuman ? '' : 'disabled';
+    const lock = isHuman ? '' : '<p class="direct-message-lock">Чтобы написать пользователю, сначала нажмите «Взять диалог».</p>';
+    return `<form method="post" enctype="multipart/form-data" class="direct-message-form ${isHuman ? '' : 'is-locked'}">${csrfField(this.session)}<input type="hidden" name="action" value="send_direct_message"><input type="hidden" name="_return" value="${h(this.messagesUrl({ personId: person.id, q }))}"><input type="hidden" name="person_id" value="${Number(person.id)}"><div class="direct-message-fields"><textarea name="text" rows="3" placeholder="${isHuman ? 'Написать личное сообщение' : 'Диалог ведет бот'}" ${disabled}></textarea><label class="direct-photo-field">Картинка<span class="field-caption">до 50 МБ</span><input type="file" name="media_upload" accept="image/*" data-max-file-size="${DIRECT_IMAGE_UPLOAD_LIMIT}" ${disabled}></label></div>${lock}<button class="button button-primary" type="submit" ${disabled}>Отправить</button></form>`;
   }
 
   messagesUrl({ personId = 0, q = '' } = {}) {
@@ -471,6 +532,12 @@ export class AdminController {
 
   messageTypeLabel(type) {
     return {
+      bot: 'Бот',
+      bot_venue: 'Геометка',
+      bot_photo: 'Картинка',
+      bot_video: 'Видео',
+      bot_video_note: 'Кружок',
+      bot_document: 'Файл',
       video_note: 'Кружок',
       video: 'Видео',
       photo: 'Картинка',
@@ -481,6 +548,32 @@ export class AdminController {
       system: 'Системное',
       message: 'Сообщение',
     }[type] || 'Текст';
+  }
+
+  chatMessageAuthor(message) {
+    const type = String(message.message_type || '');
+    if (message.direction !== 'out') return 'Пользователь';
+    if (type.startsWith('bot')) return 'Бот';
+    if (type === 'system') return 'Система';
+    return 'Вы';
+  }
+
+  messagePreviewPrefix(direction, type) {
+    if (direction !== 'out') return '';
+    const messageType = String(type || '');
+    if (messageType.startsWith('bot')) return 'Бот: ';
+    if (messageType === 'system') return 'Система: ';
+    return 'Вы: ';
+  }
+
+  messagesTotalLabel(total) {
+    const count = Number(total || 0);
+    const lastTwo = count % 100;
+    const last = count % 10;
+    if (lastTwo >= 11 && lastTwo <= 14) return `${count} контактов`;
+    if (last === 1) return `${count} контакт`;
+    if (last >= 2 && last <= 4) return `${count} контакта`;
+    return `${count} контактов`;
   }
 
   multilineHtml(text) {
@@ -953,8 +1046,11 @@ export class AdminController {
     if (text.length > 8000) throw new Error('Сообщение слишком длинное');
     if (mediaUpload && text.length > 900) throw new Error('Подпись к картинке должна быть до 900 символов');
 
-    const person = await queryOne('SELECT id, telegram_id, full_name, username FROM people WHERE id = :id LIMIT 1', { id: personId });
+    const person = await queryOne('SELECT id, telegram_id, full_name, username, chat_mode FROM people WHERE id = :id LIMIT 1', { id: personId });
     if (!person) throw new Error('Контакт не найден');
+    if (String(person.chat_mode || 'bot') !== 'human') {
+      throw new Error('Сначала возьмите диалог на себя');
+    }
     const telegramId = Number(person.telegram_id || 0);
     if (!telegramId) throw new Error('У контакта нет Telegram ID');
 
@@ -1157,12 +1253,16 @@ export class AdminController {
 
   async saveEvent(form) {
     const id = Number(form.id || 0);
+    const existing = id > 0 ? await queryOne('SELECT photo_album_url FROM events WHERE id = :id LIMIT 1', { id }) : null;
+    const dateStart = this.fromDatetimeLocal(form.date_start);
+    const dateEnd = this.eventDateEndForSave(dateStart, this.fromDatetimeLocal(form.date_end), form.duration_minutes);
     const data = {
       title: String(form.title || '').trim(),
-      slug: String(form.slug || '').trim(),
+      slug: '',
       description: String(form.description || '').trim(),
-      date_start: this.fromDatetimeLocal(form.date_start),
-      date_end: this.fromDatetimeLocal(form.date_end),
+      date_start: dateStart,
+      date_end: dateEnd,
+      guest_arrival_at: this.fromDatetimeLocal(form.guest_arrival_at),
       online_start: this.fromDatetimeLocal(form.online_start),
       address: String(form.address || '').trim(),
       venue_lat: form.venue_lat ? String(form.venue_lat) : null,
@@ -1171,34 +1271,120 @@ export class AdminController {
       facecast_event_id: String(form.facecast_event_id || '').trim(),
       facecast_url: String(form.facecast_url || '').trim(),
       recording_url: String(form.recording_url || '').trim(),
-      photo_album_url: String(form.photo_album_url || '').trim(),
+      photo_album_url: String(form.photo_album_url ?? existing?.photo_album_url ?? '').trim(),
+      postpromo_message: String(form.postpromo_message || '').trim(),
+      postpromo_send_at: this.fromDatetimeLocal(form.postpromo_send_at),
+      offline_1day_send_at: this.fromDatetimeLocal(form.offline_1day_send_at),
+      offline_2hours_send_at: this.fromDatetimeLocal(form.offline_2hours_send_at),
+      offline_started_send_at: this.fromDatetimeLocal(form.offline_started_send_at),
+      online_15min_send_at: this.fromDatetimeLocal(form.online_15min_send_at),
+      online_started_send_at: this.fromDatetimeLocal(form.online_started_send_at),
       is_active: form.is_active ? 1 : 0,
       now: nowSql(),
     };
-    if (!data.title || !data.slug || !data.date_start || !data.date_end) {
-      throw new Error('Заполните название, slug, начало и окончание');
+    if (!data.title || !data.date_start || !data.date_end) {
+      throw new Error('Заполните название, начало и окончание');
     }
+    data.slug = await this.eventSlugForSave(id, data.title, data.date_start);
+    let eventId = id;
     if (id > 0) {
       await execute(
         `UPDATE events SET title = :title, slug = :slug, description = :description, date_start = :date_start,
-         date_end = :date_end, online_start = :online_start, address = :address, venue_lat = :venue_lat,
+         date_end = :date_end, guest_arrival_at = :guest_arrival_at, online_start = :online_start, address = :address, venue_lat = :venue_lat,
          venue_lng = :venue_lng, offline_capacity = :offline_capacity, facecast_event_id = :facecast_event_id,
          facecast_url = :facecast_url, recording_url = :recording_url, photo_album_url = :photo_album_url,
+         postpromo_message = :postpromo_message, postpromo_send_at = :postpromo_send_at,
+         offline_1day_send_at = :offline_1day_send_at, offline_2hours_send_at = :offline_2hours_send_at,
+         offline_started_send_at = :offline_started_send_at, online_15min_send_at = :online_15min_send_at,
+         online_started_send_at = :online_started_send_at,
          is_active = :is_active, updated_at = :now WHERE id = :id`,
         { ...data, id },
       );
     } else {
-      await execute(
+      const inserted = await execute(
         `INSERT INTO events
-         (title, slug, description, date_start, date_end, online_start, address, venue_lat, venue_lng,
-          offline_capacity, facecast_event_id, facecast_url, recording_url, photo_album_url, is_active, created_at, updated_at)
+         (title, slug, description, date_start, date_end, guest_arrival_at, online_start, address, venue_lat, venue_lng,
+          offline_capacity, facecast_event_id, facecast_url, recording_url, photo_album_url,
+          postpromo_message, postpromo_send_at, offline_1day_send_at, offline_2hours_send_at,
+          offline_started_send_at, online_15min_send_at, online_started_send_at, is_active, created_at, updated_at)
          VALUES
-         (:title, :slug, :description, :date_start, :date_end, :online_start, :address, :venue_lat, :venue_lng,
-          :offline_capacity, :facecast_event_id, :facecast_url, :recording_url, :photo_album_url, :is_active, :now, :now)`,
+         (:title, :slug, :description, :date_start, :date_end, :guest_arrival_at, :online_start, :address, :venue_lat, :venue_lng,
+          :offline_capacity, :facecast_event_id, :facecast_url, :recording_url, :photo_album_url,
+          :postpromo_message, :postpromo_send_at, :offline_1day_send_at, :offline_2hours_send_at,
+          :offline_started_send_at, :online_15min_send_at, :online_started_send_at, :is_active, :now, :now)`,
         data,
       );
+      eventId = Number(inserted.insertId || 0);
     }
+    await this.refreshEventSchedules(eventId);
     this.flash('Мероприятие сохранено');
+  }
+
+  async refreshEventSchedules(eventId) {
+    if (Number(eventId || 0) <= 0) return;
+    const event = await queryOne('SELECT * FROM events WHERE id = :eventId LIMIT 1', { eventId });
+    if (!event) return;
+    const registrations = await query('SELECT * FROM registrations WHERE event_id = :eventId', { eventId });
+    for (const registration of registrations) {
+      const status = String(registration.status || '');
+      const attendance = String(registration.attendance || '');
+      if (registration.archived_at || ['cancelled', 'rejected', 'no_show'].includes(status)) {
+        await this.planner.cancelAll(registration);
+      } else if (attendance === 'offline' && ['approved', 'visited'].includes(status)) {
+        await this.planner.planOfflineApproved(registration, event);
+      } else if (attendance === 'online' && status === 'approved') {
+        await this.planner.planOnline(registration, event);
+      } else if (attendance === 'online' && status === 'visited') {
+        await this.planner.cancelOnline(registration);
+        await this.planner.planPostPromo(registration, event);
+      } else {
+        await this.planner.cancelAll(registration);
+      }
+    }
+  }
+
+  async eventSlugForSave(id, title, dateStart) {
+    if (id > 0) {
+      const existing = await queryOne('SELECT slug FROM events WHERE id = :id LIMIT 1', { id });
+      const currentSlug = String(existing?.slug || '').trim();
+      if (currentSlug) {
+        return currentSlug;
+      }
+    }
+
+    return this.uniqueEventSlug(this.eventSlugBase(title, dateStart), id);
+  }
+
+  async uniqueEventSlug(base, id = 0) {
+    let slug = base || 'event';
+    let suffix = 2;
+    while (await queryOne('SELECT id FROM events WHERE slug = :slug AND id <> :id LIMIT 1', { slug, id: Number(id || 0) })) {
+      slug = `${base}-${suffix}`;
+      suffix += 1;
+    }
+    return slug;
+  }
+
+  eventSlugBase(title, dateStart) {
+    const translit = {
+      а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z',
+      и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r',
+      с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts', ч: 'ch', ш: 'sh',
+      щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya',
+    };
+    const titlePart = String(title || '')
+      .trim()
+      .toLowerCase()
+      .split('')
+      .map((char) => translit[char] ?? char)
+      .join('')
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 90) || 'event';
+    const datePart = String(dateStart || '').match(/\d{4}-\d{2}-\d{2}/)?.[0] || '';
+    return [titlePart, datePart].filter(Boolean).join('-');
   }
 
   async approveRegistration(form) {
@@ -1524,7 +1710,10 @@ export class AdminController {
     return queryOne(
       `SELECT r.*, p.telegram_id, p.full_name, p.company, p.position_title, p.phone, p.email,
         e.id AS event_id, e.title, e.slug, e.description, e.date_start, e.date_end, e.online_start,
-        e.address, e.venue_lat, e.venue_lng, e.facecast_event_id, e.facecast_url, e.recording_url, e.photo_album_url
+        e.guest_arrival_at, e.address, e.venue_lat, e.venue_lng, e.facecast_event_id, e.facecast_url, e.recording_url,
+        e.photo_album_url, e.postpromo_message, e.postpromo_send_at,
+        e.offline_1day_send_at, e.offline_2hours_send_at, e.offline_started_send_at,
+        e.online_15min_send_at, e.online_started_send_at
        FROM registrations r
        JOIN people p ON p.id = r.person_id
        JOIN events e ON e.id = r.event_id
@@ -1584,6 +1773,7 @@ export class AdminController {
       + `<b>Название:</b> ${h(row.title)}\n`
       + `<b>Дата:</b> ${h(dateShort(row.date_start))}\n`
       + `<b>Время:</b> ${h(timeRange(row.date_start, row.date_end))}\n`
+      + `<b>Сбор гостей:</b> ${h(this.offlineArrivalTime(row))}\n`
       + `<b>Наш адрес:</b> ${h(row.address || '')}\n`
       + '<b>Формат:</b> офлайн\n\n'
       + 'Перед событием пришлём напоминание. Маршрут держим под рукой, хорошее настроение тоже.';
@@ -1591,6 +1781,11 @@ export class AdminController {
     if (row.venue_lat !== null && row.venue_lng !== null) {
       await this.telegram.sendVenue(Number(row.telegram_id), Number(row.venue_lat), Number(row.venue_lng), 'Мегаполис Медиа', String(row.address || ''));
     }
+  }
+
+  offlineArrivalTime(row) {
+    const value = String(row.guest_arrival_at || '').trim();
+    return timeOnly(value || shiftDate(row.date_start, -30 * 60 * 1000));
   }
 
   async sendOfflineRejected(row) {
@@ -1805,12 +2000,12 @@ export class AdminController {
   }
 
   receptionGroup(title, registrations, status, returnUrl) {
-    let body = `<section class="reception-group" data-reception-group data-status="${h(status)}"><header><span>${h(title)}</span><strong>${registrations.length}</strong></header><div class="reception-group-list" data-reception-list data-status="${h(status)}">`;
+    let body = `<section class="reception-group" data-reception-group data-status="${h(status)}"><header><span>${h(title)}</span><strong>${registrations.length}</strong></header><div class="reception-group-list" data-reception-list data-status="${h(status)}"><div class="reception-table-head"><span>Гость</span><span>Компания</span><span>Должность</span><span>Отметка</span></div>`;
     if (registrations.length === 0) body += '<p class="reception-empty">Пусто</p>';
     for (const row of registrations) {
       const visited = row.status === 'visited';
       const statusKey = visited ? 'visited' : 'approved';
-      body += `<article class="reception-row ${visited ? 'is-visited' : ''}" data-reception-row data-status="${h(statusKey)}" data-person-name="${h(this.receptionName(row))}"><div class="reception-main"><strong>${h(row.full_name)}</strong><span>${h(row.company)}</span><span class="muted">${h(row.position_title)}</span></div><div class="reception-action">${this.visitToggleForm(row, visited, returnUrl)}</div></article>`;
+      body += `<article class="reception-row ${visited ? 'is-visited' : ''}" data-reception-row data-status="${h(statusKey)}" data-person-name="${h(this.receptionName(row))}"><strong class="reception-name">${h(row.full_name)}</strong><span class="reception-company">${h(row.company)}</span><span class="reception-position muted">${h(row.position_title)}</span><div class="reception-action">${this.visitToggleForm(row, visited, returnUrl)}</div></article>`;
     }
     return `${body}</div></section>`;
   }
@@ -1968,6 +2163,169 @@ export class AdminController {
     return `<label>${h(label)}<textarea name="${h(name)}" rows="8">${h(value ?? '')}</textarea></label>`;
   }
 
+  eventTimeWidget(event) {
+    const start = this.datetimeLocal(event.date_start);
+    const end = this.datetimeLocal(event.date_end);
+    const guestArrival = this.datetimeLocal(event.guest_arrival_at);
+    const duration = this.eventDurationMinutes(event.date_start, event.date_end);
+    return `<div class="event-time-widget" data-event-time-widget>
+      <input type="hidden" name="date_end" value="${h(end)}" data-event-end>
+      <div class="event-time-lane">
+        <label class="event-time-card event-time-card-arrival">
+          <span>Время прихода гостей</span>
+          <input type="datetime-local" name="guest_arrival_at" value="${h(guestArrival)}" data-event-arrival-input>
+          <em data-event-arrival-default>Пусто = за 30 минут до начала</em>
+        </label>
+        <label class="event-time-card event-time-card-start">
+          <span>Дата и время мероприятия</span>
+          <input type="datetime-local" name="date_start" value="${h(start)}" required data-event-start>
+        </label>
+        <label class="event-time-card event-time-card-duration">
+          <span>Длительность</span>
+          <span class="event-duration-control"><input type="number" name="duration_minutes" value="${Number(duration)}" min="15" step="15" data-event-duration><b>мин</b></span>
+          <em data-event-end-label>Окончание рассчитается автоматически</em>
+        </label>
+      </div>
+    </div>`;
+  }
+
+  eventDurationMinutes(start, end) {
+    if (!start || !end) return 120;
+    const duration = Math.round((parseDate(end).getTime() - parseDate(start).getTime()) / 60000);
+    return duration > 0 ? duration : 120;
+  }
+
+  eventDateEndForSave(dateStart, dateEnd, durationMinutes) {
+    if (dateEnd) return dateEnd;
+    if (!dateStart) return null;
+    const minutes = Math.max(15, Number(durationMinutes || 120) || 120);
+    return formatSqlDate(new Date(parseDate(dateStart).getTime() + minutes * 60000));
+  }
+
+  async eventNotificationScheduleWidget(event) {
+    if (!event?.date_start) {
+      return '';
+    }
+
+    const queueStats = await this.eventNotificationQueueStats(event.id);
+    const rows = this.eventNotificationPreviewRows(event, queueStats);
+    let body = '<section class="event-notifications-widget"><header><div><span>Автоуведомления бота</span><h3>Расписание отправки, МСК</h3></div><b>Europe/Moscow</b></header>';
+    body += '<div class="event-notifications-list">';
+    for (const row of rows) {
+      const state = row.sendAt ? this.notificationTimeState(row.sendAt) : 'muted';
+      body += `<article class="event-notification-row ${row.disabled ? 'is-disabled' : ''}">
+        <div><strong>${h(row.title)}</strong><span>${h(row.audience)}</span></div>
+        <time>${h(row.sendAt ? this.dateTime(row.sendAt) : row.whenLabel)}</time>
+        <span class="event-notification-state ${h(state)}">${h(row.sendAt ? this.notificationStateLabel(row.sendAt) : row.stateLabel)}</span>
+        <em>${h(row.queueLabel)}</em>
+        ${row.fieldName ? this.notificationCustomInput(row) : '<span></span>'}
+      </article>`;
+    }
+    body += '</div></section>';
+    return body;
+  }
+
+  async eventNotificationQueueStats(eventId) {
+    if (Number(eventId || 0) <= 0) {
+      return new Map();
+    }
+
+    const rows = await query(
+      `SELECT type, COUNT(*) AS queued, MIN(send_at) AS first_send_at
+       FROM scheduled_messages
+       WHERE event_id = :eventId
+         AND sent_at IS NULL
+         AND failed_at IS NULL
+       GROUP BY type`,
+      { eventId: Number(eventId) },
+    );
+    return new Map(rows.map((row) => [String(row.type || ''), row]));
+  }
+
+  eventNotificationPreviewRows(event, queueStats) {
+    const rows = [];
+    const offline = eventSupportsOffline(event);
+    const online = eventSupportsOnline(event);
+    const onlineStart = event.online_start || event.date_start;
+
+    if (offline) {
+      rows.push(
+        this.notificationPreviewRow(event, queueStats, 'offline_1day', 'offline_1day_send_at', 'Офлайн: за 24 часа', 'Подтверждённые офлайн-гости', shiftDate(event.date_start, -24 * 60 * 60 * 1000)),
+        this.notificationPreviewRow(event, queueStats, 'offline_2hours', 'offline_2hours_send_at', 'Офлайн: за 2 часа', 'Подтверждённые офлайн-гости', shiftDate(event.date_start, -2 * 60 * 60 * 1000)),
+        this.notificationPreviewRow(event, queueStats, 'offline_started', 'offline_started_send_at', 'Офлайн: старт', 'Подтверждённые офлайн-гости', parseDate(event.date_start)),
+      );
+    } else {
+      rows.push(this.notificationDisabledRow(queueStats, OFFLINE_NOTIFICATION_TYPES, 'Офлайн-напоминания', 'У мероприятия нет офлайн-формата'));
+    }
+
+    if (online) {
+      rows.push(
+        this.notificationPreviewRow(event, queueStats, 'online_15min', 'online_15min_send_at', 'Онлайн: за 15 минут', 'Онлайн-участники', shiftDate(onlineStart, -15 * 60 * 1000)),
+        this.notificationPreviewRow(event, queueStats, 'online_started', 'online_started_send_at', 'Онлайн: старт эфира', 'Онлайн-участники', parseDate(onlineStart)),
+      );
+    } else {
+      rows.push(this.notificationDisabledRow(queueStats, ONLINE_NOTIFICATION_TYPES, 'Онлайн-напоминания', 'У мероприятия нет онлайн-формата'));
+    }
+
+    const postPromoText = String(event.postpromo_message || '').trim();
+    if (postPromoText && event.postpromo_send_at) {
+      rows.push(this.notificationPreviewRow(event, queueStats, 'postpromo', '', 'Постпромо', 'Подтверждённые и пришедшие участники', parseDate(event.postpromo_send_at)));
+    } else {
+      rows.push(this.notificationDisabledRow(queueStats, ['postpromo'], 'Постпромо', postPromoText ? 'Не указано время отправки' : 'Не указан текст сообщения'));
+    }
+
+    return rows;
+  }
+
+  notificationPreviewRow(event, queueStats, type, fieldName, title, audience, defaultSendAt) {
+    const customSendAt = fieldName ? String(event?.[fieldName] || '').trim() : '';
+    const sendAt = customSendAt ? parseDate(customSendAt) : defaultSendAt;
+    const stats = queueStats.get(type);
+    const queued = Number(stats?.queued || 0);
+    const firstSendAt = stats?.first_send_at || '';
+    const queueLabel = queued > 0
+      ? `В очереди: ${queued}${firstSendAt ? `, ближайшее ${this.dateTime(firstSendAt)}` : ''}`
+      : 'В очереди сейчас нет';
+    return { type, title, audience, sendAt, customSendAt, defaultSendAt, fieldName, queueLabel };
+  }
+
+  notificationCustomInput(row) {
+    return `<label class="event-notification-control">
+      <span>Изменить</span>
+      <input type="datetime-local" name="${h(row.fieldName)}" value="${h(this.datetimeLocal(row.customSendAt))}">
+      <small>Пусто = стандарт: ${h(this.dateTime(row.defaultSendAt))}</small>
+    </label>`;
+  }
+
+  notificationDisabledRow(queueStats, types, title, stateLabel) {
+    const items = Array.isArray(types) ? types : [types];
+    const stats = items.map((type) => queueStats.get(type)).filter(Boolean);
+    const queued = stats.reduce((total, row) => total + Number(row?.queued || 0), 0);
+    const firstSendAt = stats
+      .map((row) => row?.first_send_at)
+      .filter(Boolean)
+      .sort((left, right) => parseDate(left).getTime() - parseDate(right).getTime())[0] || '';
+    return {
+      title,
+      audience: 'Не планируется',
+      sendAt: null,
+      whenLabel: '—',
+      stateLabel,
+      queueLabel: queued > 0
+        ? `Устаревшая очередь: ${queued}${firstSendAt ? `, ближайшее ${this.dateTime(firstSendAt)}` : ''}`
+        : 'В очереди сейчас нет',
+      disabled: true,
+    };
+  }
+
+  notificationTimeState(value) {
+    return parseDate(value) <= new Date() ? 'past' : 'future';
+  }
+
+  notificationStateLabel(value) {
+    return this.notificationTimeState(value) === 'past' ? 'в прошлом' : 'будет отправлено';
+  }
+
   datetimeLocal(value) {
     if (!value) return '';
     return formatSqlDate(parseDate(value)).slice(0, 16).replace(' ', 'T');
@@ -1985,8 +2343,9 @@ export class AdminController {
 
   dateTime(value) {
     if (!value) return '';
-    const date = parseDate(value);
-    return `${date.toLocaleDateString('ru-RU')} ${timeOnly(date)}`;
+    const [date, time] = formatSqlDate(parseDate(value)).split(' ');
+    const [year, month, day] = date.split('-');
+    return `${day}.${month}.${year} ${time.slice(0, 5)}`;
   }
 
   mainMenuKeyboard() {
@@ -2209,8 +2568,11 @@ export class AdminController {
       body += `<a${activePage === key ? ' class="active"' : ''} href="${h(href)}" title="${h(label)}">${this.icon(icon)}<span class="nav-label">${h(label)}</span></a>`;
     }
     body += `</nav><a class="logout" href="/?action=logout" title="Выйти">${this.icon('logout')}<span class="nav-label">Выйти</span></a></aside>`;
-    body += `<main class="main"><header class="topbar"><h1>${h(title)}</h1><span>${h(config.appUrl)}</span></header>`;
-    const showFlash = flash && page !== 'registrations';
+    body += '<main class="main">';
+    if (page !== 'reception') {
+      body += `<header class="topbar"><h1>${h(title)}</h1><span>${h(config.appUrl)}</span></header>`;
+    }
+    const showFlash = flash && !['registrations', 'reception'].includes(page);
     if (showFlash) body += `<div class="notice notice-${h(flash.type)}">${h(flash.message)}</div>`;
     return `${body}<div class="main-content">${content}</div></main><script src="/assets/admin.js"></script></body></html>`;
   }

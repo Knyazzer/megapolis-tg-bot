@@ -8,6 +8,7 @@ import { loadSession } from './admin/admin-auth.js';
 import { BotController } from './bot/bot-controller.js';
 import { pingDb, queryOne } from './db/mysql.js';
 import { mysqlSchemaDiagnostics } from './db/schema-checks.js';
+import { ChatRecordingTelegramClient } from './services/chat-recording-telegram-client.js';
 import { TelegramClient } from './services/telegram-client.js';
 import { h } from './utils/html.js';
 import { logger } from './utils/logger.js';
@@ -226,10 +227,10 @@ async function handleTelegramWebhook(request, response) {
 
   const update = await readJsonBody(request);
   const chatId = extractChatId(update);
-  const telegram = new TelegramClient({
+  const telegram = new ChatRecordingTelegramClient(new TelegramClient({
     webhookChatId: chatId,
     preferWebhookReply: config.telegram.replyMode === 'webhook',
-  });
+  }));
 
   await new BotController({ telegram }).handle(update);
 
