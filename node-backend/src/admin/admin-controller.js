@@ -10,6 +10,7 @@ import {
 } from '../repositories/events-repository.js';
 import { ChatRepository } from '../repositories/chat-repository.js';
 import { FacecastClient } from '../services/facecast-client.js';
+import { GiveawaysRepository } from '../repositories/giveaways-repository.js';
 import { ReminderPlanner } from '../services/reminder-planner.js';
 import { TelegramClient } from '../services/telegram-client.js';
 import { dateShort, formatSqlDate, nowSql, parseDate, shiftDate, timeOnly, timeRange } from '../utils/dates.js';
@@ -43,6 +44,7 @@ export class AdminController {
     this.planner = new ReminderPlanner();
     this.chat = new ChatRepository();
     this.facecast = new FacecastClient();
+    this.giveaways = new GiveawaysRepository();
   }
 
   async handle({ method, url, form }) {
@@ -81,6 +83,10 @@ export class AdminController {
 
     if (action === 'registration_details') {
       return this.registrationDetailsJson(url);
+    }
+
+    if (action === 'giveaway_entries_export') {
+      return this.giveawayEntriesExport(url);
     }
 
     const page = String(url.searchParams.get('page') || 'registrations');
@@ -135,6 +141,14 @@ export class AdminController {
         await this.cancelBroadcastCampaign(form);
       } else if (action === 'delete_broadcast_campaign') {
         await this.deleteBroadcastCampaign(form);
+      } else if (action === 'save_giveaway') {
+        await this.saveGiveaway(form);
+      } else if (action === 'toggle_giveaway') {
+        await this.toggleGiveaway(form);
+      } else if (action === 'archive_giveaway') {
+        await this.archiveGiveaway(form);
+      } else if (action === 'restore_giveaway') {
+        await this.restoreGiveaway(form);
       } else if (action === 'reset_person_history') {
         await this.resetPersonHistory(form);
       } else if (action === 'seed_demo') {
@@ -201,6 +215,7 @@ export class AdminController {
     if (page === 'messages') return this.messagesPage(url);
     if (page === 'reception') return this.receptionPage(url);
     if (page === 'broadcasts') return this.broadcastsPage(url);
+    if (page === 'giveaways') return this.giveawaysPage(url);
     if (page === 'flow') return this.flowPage();
     if (page === 'simulator') return this.simulatorPage();
     return this.registrationsPage(url);
@@ -1028,6 +1043,215 @@ export class AdminController {
     return body;
   }
 
+  async giveawaysPage(url) {
+    const archiveView = String(url.searchParams.get('tab') || '') === 'archive';
+    const giveaways = await this.giveaways.listWithCounts({ archived: archiveView });
+    const isCreating = !archiveView && String(url.searchParams.get('mode') || '') === 'new';
+    const selectedId = isCreating ? 0 : Number(url.searchParams.get('giveaway_id') || giveaways[0]?.id || 0);
+    const selected = giveaways.find((giveaway) => Number(giveaway.id) === selectedId) || giveaways[0] || null;
+    const formGiveaway = isCreating ? this.blankGiveaway() : (selected || this.blankGiveaway());
+    const entries = !isCreating && selected ? await this.giveaways.listEntries(selected.id) : [];
+
+    let body = '<section class="panel giveaways-workspace">';
+    body += '<div class="panel-head giveaways-head"><div><h2>Розыгрыши</h2><span class="muted">Акции, коллаборации и участники из Telegram-бота</span></div><a class="button button-primary" href="/?page=giveaways&mode=new">Новый розыгрыш</a></div>';
+    body += `<nav class="broadcast-tabs giveaway-tabs" aria-label="Раздел розыгрышей"><a class="${archiveView ? '' : 'active'}" href="/?page=giveaways">Активные</a><a class="${archiveView ? 'active' : ''}" href="/?page=giveaways&tab=archive">Архив</a></nav>`;
+
+    if (giveaways.length === 0) {
+      body += '<div class="giveaway-layout">';
+      body += `<p class="empty">${archiveView ? 'В архиве пока нет розыгрышей.' : 'Розыгрышей пока нет. Создайте первый, и бот сразу сможет показывать его пользователям.'}</p>`;
+      if (archiveView) {
+        return `${body}</div></section>`;
+      }
+      body += this.giveawayForm(formGiveaway, true);
+      return `${body}</div></section>`;
+    }
+
+    body += '<div class="giveaway-layout"><div class="giveaway-main">';
+    body += '<div class="giveaway-cards">';
+    for (const giveaway of giveaways) {
+      const active = Number(giveaway.id) === Number(selected?.id || 0);
+      const archived = Boolean(giveaway.archived_at);
+      body += `<article class="giveaway-card ${active && !isCreating ? 'active' : ''} ${Number(giveaway.is_active) === 1 ? '' : 'is-hidden'} ${archived ? 'is-archived' : ''}">`;
+      body += `<a href="/?page=giveaways${archiveView ? '&tab=archive' : ''}&giveaway_id=${Number(giveaway.id)}">`;
+      body += `<span>${this.giveawayStateLabel(giveaway)}</span>`;
+      body += `<strong>${h(giveaway.title)}</strong>`;
+      body += `<em>${Number(giveaway.entries_count || 0)} участников</em>`;
+      body += `<small>${archived ? `В архиве с ${h(this.dateTime(giveaway.archived_at))}` : (giveaway.draw_at ? `Дата события: ${h(this.dateTime(giveaway.draw_at))}` : 'Дата не указана')}</small>`;
+      body += '</a>';
+      body += `<div class="giveaway-card-actions">${this.giveawayCardActions(giveaway, archiveView)}</div>`;
+      body += '</article>';
+    }
+    body += '</div>';
+
+    if (!isCreating && selected) {
+      body += '<div class="giveaway-detail">';
+      body += `<div class="giveaway-detail-head"><div><h3>${h(selected.title)}</h3><p>${h(selected.description || '')}</p></div><div class="giveaway-detail-actions"><strong>${entries.length} участников</strong><a class="button small-button" href="${h(this.giveawayExportUrl(selected))}">Скачать CSV</a></div></div>`;
+      body += `<dl class="giveaway-meta"><div><dt>Приз</dt><dd>${h(selected.prize || '—')}</dd></div><div><dt>Дата события</dt><dd>${h(selected.draw_at ? this.dateTime(selected.draw_at) : '—')}</dd></div><div><dt>Итоги</dt><dd>${selected.result_url ? `<a href="${h(selected.result_url)}" target="_blank" rel="noopener">Открыть запись</a>` : 'Запись розыгрыша будет опубликована в Telegram-канале'}</dd></div></dl>`;
+
+      if (entries.length === 0) {
+        body += '<p class="empty">Пока никто не нажал кнопку участия.</p>';
+      } else {
+        body += '<div class="people-table-wrap"><table class="people-table giveaway-entries-table"><thead><tr><th>Участник</th><th>Компания</th><th>Контакты</th><th>Статус</th><th>Дата участия</th><th></th></tr></thead><tbody>';
+        for (const entry of entries) {
+          body += this.giveawayEntryRow(entry);
+        }
+        body += '</tbody></table></div>';
+      }
+      body += '</div>';
+    }
+
+    body += '</div>';
+    body += this.giveawayForm(formGiveaway, isCreating);
+    body += '</div></section>';
+    return body;
+  }
+
+  blankGiveaway() {
+    return {
+      id: 0,
+      title: '',
+      description: '',
+      prize: '',
+      draw_at: '',
+      result_url: '',
+      is_active: 1,
+    };
+  }
+
+  giveawayForm(giveaway, isCreating = false) {
+    const id = Number(giveaway.id || 0);
+    const isArchived = Boolean(giveaway.archived_at);
+    const title = isCreating ? 'Новый розыгрыш' : 'Настройки розыгрыша';
+    const returnUrl = id > 0 ? `/?page=giveaways${isArchived ? '&tab=archive' : ''}&giveaway_id=${id}` : '/?page=giveaways';
+    let body = '<aside class="giveaway-form-card">';
+    body += `<div><h3>${h(title)}</h3><p class="muted">${this.giveawayFormHint(giveaway, isCreating)}</p></div>`;
+    body += '<form method="post" class="form-grid">';
+    body += `${csrfField(this.session)}<input type="hidden" name="action" value="save_giveaway"><input type="hidden" name="_return" value="${h(returnUrl)}"><input type="hidden" name="id" value="${id}">`;
+    body += this.input('Название', 'title', giveaway.title, true);
+    body += this.textarea('Описание', 'description', giveaway.description);
+    body += this.input('Приз', 'prize', giveaway.prize);
+    body += this.input('Дата события / розыгрыша', 'draw_at', this.datetimeLocal(giveaway.draw_at), false, 'datetime-local');
+    body += this.input('Ссылка на итоги', 'result_url', giveaway.result_url, false, 'url');
+    body += `<label class="event-active-toggle giveaway-active-toggle ${isArchived ? 'is-disabled' : ''}">
+      <input type="checkbox" name="is_active" value="1" ${Number(giveaway.is_active) === 1 ? 'checked' : ''} ${isArchived ? 'disabled' : ''}>
+      <span><strong>Показывать в боте</strong><em>${isArchived ? 'Архивные розыгрыши не показываются в боте' : 'Если выключить, пользователи не увидят розыгрыш'}</em></span>
+    </label>`;
+    body += `<div class="actions"><button class="button button-primary" type="submit">${isCreating ? 'Создать розыгрыш' : 'Сохранить'}</button>${isCreating ? '<a class="button muted-button" href="/?page=giveaways">Отмена</a>' : '<a class="button muted-button" href="/?page=giveaways&mode=new">Создать новый</a>'}</div>`;
+    body += '</form></aside>';
+    return body;
+  }
+
+  giveawayFormHint(giveaway, isCreating = false) {
+    if (isCreating) {
+      return 'Создайте кампанию и включите ее, когда будете готовы показать в боте.';
+    }
+    if (giveaway.archived_at) {
+      return 'Розыгрыш в архиве: бот его не показывает, но участники и CSV сохранены.';
+    }
+    return 'Изменения сразу влияют на карточку в боте и будущие нажатия.';
+  }
+
+  giveawayStateLabel(giveaway) {
+    if (giveaway.archived_at) return 'В архиве';
+    return Number(giveaway.is_active) === 1 ? 'Активен в боте' : 'Скрыт из бота';
+  }
+
+  giveawayCardActions(giveaway, archiveView = false) {
+    if (giveaway.archived_at) {
+      return this.giveawayArchiveForm(giveaway, 'restore_giveaway', 'Восстановить', 'button button-primary small-button', `/?page=giveaways&tab=archive&giveaway_id=${Number(giveaway.id)}`);
+    }
+
+    return `${this.giveawayToggleForm(giveaway)}${this.giveawayArchiveForm(giveaway, 'archive_giveaway', 'В архив', 'button muted-button small-button', `/?page=giveaways${archiveView ? '&tab=archive' : ''}&giveaway_id=${Number(giveaway.id)}`, 'Розыгрыш будет скрыт из бота и перенесён в архив. Продолжить?')}`;
+  }
+
+  giveawayToggleForm(giveaway) {
+    const isActive = Number(giveaway.is_active) === 1;
+    return `<form method="post" class="inline-form">${csrfField(this.session)}<input type="hidden" name="action" value="toggle_giveaway"><input type="hidden" name="_return" value="/?page=giveaways&giveaway_id=${Number(giveaway.id)}"><input type="hidden" name="id" value="${Number(giveaway.id)}"><input type="hidden" name="is_active" value="${isActive ? 0 : 1}"><button class="button small-button ${isActive ? 'muted-button' : 'button-primary'}" type="submit">${isActive ? 'Скрыть' : 'Включить'}</button></form>`;
+  }
+
+  giveawayArchiveForm(giveaway, action, label, buttonClass, returnUrl, confirm = '') {
+    return `<form method="post" class="inline-form" ${confirm ? `data-confirm="${h(confirm)}"` : ''}>${csrfField(this.session)}<input type="hidden" name="action" value="${h(action)}"><input type="hidden" name="_return" value="${h(returnUrl)}"><input type="hidden" name="id" value="${Number(giveaway.id)}"><button class="${h(buttonClass)}" type="submit">${h(label)}</button></form>`;
+  }
+
+  giveawayExportUrl(giveaway) {
+    const params = new URLSearchParams({
+      action: 'giveaway_entries_export',
+      giveaway_id: String(Number(giveaway.id || 0)),
+    });
+    return `/?${params.toString()}`;
+  }
+
+  async giveawayEntriesExport(url) {
+    const giveawayId = Number(url.searchParams.get('giveaway_id') || 0);
+    const giveaway = await this.giveaways.findById(giveawayId);
+    if (!giveaway) {
+      return json({ ok: false, error: 'Giveaway not found' }, 404);
+    }
+
+    const entries = await this.giveaways.listEntries(giveaway.id);
+    const rows = [
+      [
+        'Розыгрыш',
+        'Статус розыгрыша',
+        'Дата архивации',
+        'ФИО',
+        'Telegram username',
+        'Telegram ID',
+        'Компания',
+        'Должность',
+        'Телефон',
+        'Email',
+        'Статус участия',
+        'Источник',
+        'Дата участия',
+      ],
+    ];
+    for (const entry of entries) {
+      rows.push([
+        giveaway.title || '',
+        this.giveawayStateLabel(giveaway).toLowerCase(),
+        giveaway.archived_at ? this.dateTime(giveaway.archived_at) : '',
+        entry.full_name || '',
+        entry.username ? `@${entry.username}` : '',
+        entry.telegram_id || '',
+        entry.company || '',
+        entry.position_title || '',
+        entry.phone || '',
+        entry.email || '',
+        this.giveawayEntryStatusPlain(entry.status),
+        entry.source || '',
+        entry.created_at ? this.dateTime(entry.created_at) : '',
+      ]);
+    }
+
+    const filename = `${this.downloadSlug(giveaway.slug || giveaway.title || 'giveaway')}-participants.csv`;
+    return csv(rows, filename);
+  }
+
+  giveawayEntryStatusPlain(status) {
+    return {
+      entered: 'участвует',
+      winner: 'победитель',
+      cancelled: 'отменен',
+    }[status] || String(status || '');
+  }
+
+  giveawayEntryRow(entry) {
+    const name = entry.full_name || entry.username || `ID ${entry.telegram_id}`;
+    const username = entry.username ? `@${entry.username}` : `ID ${entry.telegram_id}`;
+    const status = {
+      entered: '<span class="badge ok">Участвует</span>',
+      winner: '<span class="badge ok">Победитель</span>',
+      cancelled: '<span class="badge">Отменен</span>',
+    }[entry.status] || `<span class="badge">${h(entry.status)}</span>`;
+    let body = `<tr><td><div class="person-main"><strong>${h(name)}</strong><span>${h(username)}</span></div></td>`;
+    body += `<td><span class="cell-main">${h(entry.company || '—')}</span>${entry.position_title ? `<span class="cell-sub">${h(entry.position_title)}</span>` : ''}</td>`;
+    body += `<td><div class="person-contact">${entry.phone ? `<span>${h(entry.phone)}</span>` : ''}${entry.email ? `<span>${h(entry.email)}</span>` : ''}</div></td>`;
+    body += `<td>${status}</td><td>${h(this.dateTime(entry.created_at))}</td>`;
+    body += `<td><a class="button small-button" href="${h(this.messagesUrl({ personId: entry.person_id }))}">В чат</a></td></tr>`;
+    return body;
+  }
+
   async broadcastDefaults(url, events) {
     const requestedAudience = String(url.searchParams.get('audience') || 'all');
     const audience = Object.hasOwn(this.audiences(), requestedAudience) ? requestedAudience : 'all';
@@ -1598,6 +1822,86 @@ export class AdminController {
     } else {
       this.flash('Просмотр обновлен: минут пока нет');
     }
+  }
+
+  async saveGiveaway(form) {
+    const id = Number(form.id || 0);
+    const resultUrl = String(form.result_url || '').trim();
+    if (resultUrl && !/^https?:\/\//i.test(resultUrl)) {
+      throw new Error('Ссылка на итоги должна начинаться с http:// или https://');
+    }
+
+    const data = {
+      id,
+      title: String(form.title || '').trim(),
+      slug: '',
+      description: String(form.description || '').trim(),
+      prize: String(form.prize || '').trim(),
+      draw_at: this.fromDatetimeLocal(form.draw_at, 'розыгрыша'),
+      result_url: resultUrl,
+      is_active: form.is_active ? 1 : 0,
+    };
+
+    if (!data.title) {
+      throw new Error('Заполните название розыгрыша');
+    }
+
+    data.slug = await this.giveawaySlugForSave(id, data.title, data.draw_at);
+    const giveawayId = await this.giveaways.save(data);
+    form._return = `/?page=giveaways&giveaway_id=${Number(giveawayId || id)}`;
+    this.flash(id > 0 ? 'Розыгрыш сохранен' : 'Розыгрыш создан');
+  }
+
+  async toggleGiveaway(form) {
+    const giveaway = await this.giveaways.findById(Number(form.id || 0));
+    if (!giveaway) throw new Error('Розыгрыш не найден');
+    if (giveaway.archived_at) throw new Error('Архивный розыгрыш сначала нужно восстановить');
+    const isActive = Number(form.is_active) === 1 ? 1 : 0;
+    await this.giveaways.setActive(giveaway.id, isActive);
+    this.flash(isActive ? 'Розыгрыш включен в боте' : 'Розыгрыш скрыт из бота');
+  }
+
+  async archiveGiveaway(form) {
+    const giveaway = await this.giveaways.findById(Number(form.id || 0));
+    if (!giveaway) throw new Error('Розыгрыш не найден');
+    await this.giveaways.archive(giveaway.id);
+    form._return = `/?page=giveaways&tab=archive&giveaway_id=${Number(giveaway.id)}`;
+    this.flash('Розыгрыш перенесен в архив и скрыт из бота');
+  }
+
+  async restoreGiveaway(form) {
+    const giveaway = await this.giveaways.findById(Number(form.id || 0));
+    if (!giveaway) throw new Error('Розыгрыш не найден');
+    await this.giveaways.restore(giveaway.id);
+    form._return = `/?page=giveaways&giveaway_id=${Number(giveaway.id)}`;
+    this.flash('Розыгрыш восстановлен. Включите показ в боте, когда он будет готов.');
+  }
+
+  async giveawaySlugForSave(id, title, drawAt) {
+    if (id > 0) {
+      const existing = await this.giveaways.findById(id);
+      const currentSlug = String(existing?.slug || '').trim();
+      if (currentSlug) {
+        return currentSlug;
+      }
+    }
+
+    return this.uniqueGiveawaySlug(this.giveawaySlugBase(title, drawAt), id);
+  }
+
+  async uniqueGiveawaySlug(base, id = 0) {
+    let slug = base || 'giveaway';
+    let suffix = 2;
+    while (await queryOne('SELECT id FROM giveaways WHERE slug = :slug AND id <> :id LIMIT 1', { slug, id: Number(id || 0) })) {
+      slug = `${base}-${suffix}`;
+      suffix += 1;
+    }
+    return slug;
+  }
+
+  giveawaySlugBase(title, drawAt) {
+    const base = this.eventSlugBase(title, drawAt || '').replace(/^-+|-+$/g, '') || 'giveaway';
+    return base === 'event' ? 'giveaway' : base;
   }
 
   async createBroadcast(form) {
@@ -2708,12 +3012,12 @@ export class AdminController {
     return formatSqlDate(parseDate(value)).slice(0, 16).replace(' ', 'T');
   }
 
-  fromDatetimeLocal(value) {
+  fromDatetimeLocal(value, label = 'мероприятия') {
     if (!value) return null;
     const normalized = String(value).trim();
     const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
     if (!match) {
-      throw new Error('Некорректная дата мероприятия');
+      throw new Error(`Некорректная дата ${label}`);
     }
     return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6] || '00'}`;
   }
@@ -2723,6 +3027,17 @@ export class AdminController {
     const [date, time] = formatSqlDate(parseDate(value)).split(' ');
     const [year, month, day] = date.split('-');
     return `${day}.${month}.${year} ${time.slice(0, 5)}`;
+  }
+
+  downloadSlug(value) {
+    return String(value || 'export')
+      .trim()
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9а-яё]+/gi, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 120) || 'export';
   }
 
   mainMenuKeyboard() {
@@ -2914,6 +3229,7 @@ export class AdminController {
       registrations: 'Регистрации',
       reception: 'Ресепшн',
       broadcasts: 'Рассылки',
+      giveaways: 'Розыгрыши',
       flow: 'Сценарий',
       simulator: 'Тест-чат',
     }[page] || 'Регистрации';
@@ -2938,6 +3254,7 @@ export class AdminController {
       ['messages', '/?page=messages', 'Общение', 'messages'],
       ['events', '/?page=events', 'Мероприятия', 'events'],
       ['broadcasts', '/?page=broadcasts', 'Рассылки', 'broadcasts'],
+      ['giveaways', '/?page=giveaways', 'Розыгрыши', 'giveaways'],
       ['flow', '/?page=flow', 'Сценарий', 'flow'],
       ...(config.devTools.enabled ? [['simulator', '/?page=simulator', 'Тест-чат', 'simulator']] : []),
     ]) {
@@ -2962,6 +3279,7 @@ export class AdminController {
       messages: '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7A2.5 2.5 0 0 1 17.5 16H9l-5 4v-4.5A2.5 2.5 0 0 1 4 13.5z"></path><path d="M8 9h8"></path><path d="M8 12h5"></path>',
       events: '<rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M8 3v4M16 3v4M4 10h16M8 14h3M13 14h3"></path>',
       broadcasts: '<path d="M4 12h3l9-5v10l-9-5H4z"></path><path d="M18 9.5a4 4 0 0 1 0 5"></path>',
+      giveaways: '<path d="M20 12v8H4v-8"></path><path d="M2 7h20v5H2z"></path><path d="M12 7v13"></path><path d="M12 7H8.5a2.5 2.5 0 1 1 2.5-2.5c0 1.4-1 2.5-2.5 2.5"></path><path d="M12 7h3.5A2.5 2.5 0 1 0 13 4.5C13 5.9 14 7 15.5 7"></path>',
       flow: '<circle cx="6" cy="6" r="2"></circle><circle cx="18" cy="6" r="2"></circle><circle cx="12" cy="18" r="2"></circle><path d="M8 6h8M7 8l4 8M17 8l-4 8"></path>',
       simulator: '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7A2.5 2.5 0 0 1 17.5 16H9l-5 4v-4.5A2.5 2.5 0 0 1 4 13.5z"></path><path d="M8 9h8M8 12h5"></path>',
       logout: '<path d="M10 17l5-5-5-5"></path><path d="M15 12H3"></path><path d="M14 4h5v16h-5"></path>',
@@ -3009,7 +3327,8 @@ export class AdminController {
       creative_brief: this.flowNodeData('C1', 'Идея креатива', 'Креативы', 1024, 942, [['Запрос мини-брифа', 'Давайте найдём идею для вашей задачи 💡\n\nОпишите её в нескольких предложениях: что за проект, для кого он, какую цель решаем, где будет жить креатив, какой тон нужен, какие есть сроки и ограничения.'], ['После ответа пользователя', 'Спасибо, заявка на идею принята 💡\n\nМенеджер посмотрит задачу и свяжется с вами здесь: пришлёт первые мысли, материалы или задаст уточняющие вопросы.']], ['Описать задачу', 'Менеджер отвечает']),
       recordings_archive: this.flowNodeData('R1', 'Записи эфиров', 'Архив', 1952, 1268, [['Список записей', 'Записи эфиров 🎬\n\nВыберите трансляцию. Мы оформим доступ и пришлём ссылку на просмотр записи.'], ['Если архива нет', 'Архив эфиров пока пуст.\n\nЗаписи появляются здесь после завершения трансляций и доступны в течение 6 месяцев.']], ['Выбрать запись', 'Главное меню']),
       recording_access: this.flowNodeData('R2', 'Доступ к записи', 'Архив', 2416, 1268, [['Карточка записи', 'Запись эфира\n\nНазвание: {название}\nДата эфира: {дата}\nДоступ: 6 месяцев после эфира\n\nНажмите кнопку ниже, и мы подготовим вашу ссылку на просмотр записи.'], ['Ссылка готова', 'Доступ к записи готов 🎬\n\nСсылка на просмотр записи готова.\n\nНазвание: {название}\nДата эфира: {дата}\nСрок доступа: 6 месяцев после эфира\n\nСохраните это сообщение, чтобы вернуться к просмотру в удобное время.']], ['Смотреть запись']),
-      menu: this.flowNodeData('10', 'Главное меню', 'Навигация', 1488, 942, [['Главное меню', 'Выберите действие на клавиатуре ниже 🙂'], ['Соцсети', 'Мы рядом\n\nНовости, анонсы и материалы публикуем в канале и на сайте.']], ['Телеграм канал', 'Сайт', 'Ближайшие мероприятия', 'Записи эфиров', 'Получить идею']),
+      giveaway: this.flowNodeData('G1', 'Розыгрыш ИнтерКомм', 'Акция', 1024, 1268, [['Карточка розыгрыша', 'Розыгрыш 2 билетов на премию ИнтерКомм 2026 🎁\n\nВ честь коллаборации Мегаполис Медиа и НАЭКК и выхода подкаста «Ларисочная беседка».\n\nЧто разыгрываем: 2 билета на XVII Международную премию в области корпоративных коммуникаций ИнтерКомм 2026.\n\nКогда событие: 12 ноября.\n\nЧтобы участвовать, нажмите кнопку ниже. Итоги подведём среди тех, кто нажал кнопку участия.'], ['После участия', 'Готово, вы участвуете в розыгрыше 🎁\n\nИтоги подведём рандомайзером, а запись розыгрыша опубликуем в Telegram-канале Мегаполис Медиа.']], ['Участвовать', 'Телеграм канал', 'Главное меню']),
+      menu: this.flowNodeData('10', 'Главное меню', 'Навигация', 1488, 942, [['Главное меню', 'Выберите действие на клавиатуре ниже 🙂'], ['Соцсети', 'Мы рядом\n\nНовости, анонсы и материалы публикуем в канале и на сайте.']], ['Телеграм канал', 'Сайт', 'Ближайшие мероприятия', 'Записи эфиров', 'Розыгрыши', 'Получить идею']),
     };
   }
 
@@ -3028,7 +3347,9 @@ export class AdminController {
       ['format_choice', 'online_access', 'Смотреть онлайн', 'bottom', 'left', [[2102, 852], [2292, 852], [2292, 1085]]],
       ['events', 'menu', 'Главное меню', 'bottom', 'top', [], { labelSide: 'right' }],
       ['menu', 'creative_brief', 'Получить идею', 'left', 'right'],
+      ['menu', 'giveaway', 'Розыгрыш', 'bottom', 'right', [[1448, 1206], [1356, 1206], [1356, 1411]], { labelSide: 'above' }],
       ['menu', 'recordings_archive', 'Записи эфиров', 'bottom', 'top', [[1638, 1238], [2102, 1238]], { labelSide: 'below' }],
+      ['giveaway', 'menu', 'Главное меню', 'right', 'bottom', [[1374, 1411], [1488, 1411], [1488, 1228]], { labelSide: 'right' }],
       ['recordings_archive', 'recording_access', 'Получить ссылку'],
       ['offline_pending', 'offline_approved', 'Подтвердить', 'bottom', 'top', [], { labelSide: 'right' }],
       ['offline_pending', 'offline_rejected', 'Отказ'],
@@ -3275,6 +3596,23 @@ function json(payload, status = 200) {
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
     body: JSON.stringify(payload),
   };
+}
+
+function csv(rows, filename) {
+  const body = `\uFEFF${rows.map((row) => row.map(csvCell).join(';')).join('\n')}\n`;
+  return {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${String(filename || 'export.csv').replaceAll('"', '')}"`,
+    },
+    body,
+  };
+}
+
+function csvCell(value) {
+  const text = String(value ?? '').replaceAll('"', '""');
+  return `"${text}"`;
 }
 
 function html(body, status = 200) {

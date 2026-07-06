@@ -42,6 +42,41 @@ const REQUIRED_TABLES = [
       CONSTRAINT fk_recording_access_event FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
   ],
+  [
+    'giveaways',
+    `CREATE TABLE IF NOT EXISTS giveaways (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      slug VARCHAR(160) NOT NULL UNIQUE,
+      title VARCHAR(255) NOT NULL,
+      description TEXT NULL,
+      prize VARCHAR(255) NULL,
+      draw_at DATETIME NULL,
+      result_url VARCHAR(500) NULL,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      archived_at DATETIME NULL,
+      created_at DATETIME NOT NULL,
+      updated_at DATETIME NOT NULL,
+      INDEX idx_giveaways_active_draw (is_active, draw_at),
+      INDEX idx_giveaways_archived (archived_at, is_active)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  ],
+  [
+    'giveaway_entries',
+    `CREATE TABLE IF NOT EXISTS giveaway_entries (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      giveaway_id BIGINT UNSIGNED NOT NULL,
+      person_id BIGINT UNSIGNED NOT NULL,
+      status ENUM('entered','winner','cancelled') NOT NULL DEFAULT 'entered',
+      source VARCHAR(32) NOT NULL DEFAULT 'bot',
+      created_at DATETIME NOT NULL,
+      updated_at DATETIME NOT NULL,
+      UNIQUE KEY uniq_giveaway_person (giveaway_id, person_id),
+      INDEX idx_giveaway_entries_status (giveaway_id, status),
+      INDEX idx_giveaway_entries_person (person_id),
+      CONSTRAINT fk_giveaway_entry_giveaway FOREIGN KEY (giveaway_id) REFERENCES giveaways(id) ON DELETE CASCADE,
+      CONSTRAINT fk_giveaway_entry_person FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  ],
 ];
 
 const REQUIRED_COLUMNS = [
@@ -110,6 +145,24 @@ const REQUIRED_COLUMNS = [
   ['recording_accesses', 'created_at', 'DATETIME NULL AFTER facecast_url'],
   ['recording_accesses', 'updated_at', 'DATETIME NULL AFTER created_at'],
 
+  ['giveaways', 'slug', 'VARCHAR(160) NULL AFTER id'],
+  ['giveaways', 'title', 'VARCHAR(255) NULL AFTER slug'],
+  ['giveaways', 'description', 'TEXT NULL AFTER title'],
+  ['giveaways', 'prize', 'VARCHAR(255) NULL AFTER description'],
+  ['giveaways', 'draw_at', 'DATETIME NULL AFTER prize'],
+  ['giveaways', 'result_url', 'VARCHAR(500) NULL AFTER draw_at'],
+  ['giveaways', 'is_active', 'TINYINT(1) NOT NULL DEFAULT 1 AFTER result_url'],
+  ['giveaways', 'archived_at', 'DATETIME NULL AFTER is_active'],
+  ['giveaways', 'created_at', 'DATETIME NULL AFTER archived_at'],
+  ['giveaways', 'updated_at', 'DATETIME NULL AFTER created_at'],
+
+  ['giveaway_entries', 'giveaway_id', 'BIGINT UNSIGNED NOT NULL AFTER id'],
+  ['giveaway_entries', 'person_id', 'BIGINT UNSIGNED NOT NULL AFTER giveaway_id'],
+  ['giveaway_entries', 'status', "ENUM('entered','winner','cancelled') NOT NULL DEFAULT 'entered' AFTER person_id"],
+  ['giveaway_entries', 'source', "VARCHAR(32) NOT NULL DEFAULT 'bot' AFTER status"],
+  ['giveaway_entries', 'created_at', 'DATETIME NULL AFTER source'],
+  ['giveaway_entries', 'updated_at', 'DATETIME NULL AFTER created_at'],
+
   ['scheduled_messages', 'payload', 'JSON NULL AFTER send_at'],
   ['scheduled_messages', 'sent_at', 'DATETIME NULL AFTER payload'],
   ['scheduled_messages', 'failed_at', 'DATETIME NULL AFTER sent_at'],
@@ -156,6 +209,10 @@ const REQUIRED_INDEXES = [
   ['registrations', 'idx_registrations_archived', 'CREATE INDEX idx_registrations_archived ON registrations (archived_at)'],
   ['recording_accesses', 'idx_recording_access_event', 'CREATE INDEX idx_recording_access_event ON recording_accesses (event_id)'],
   ['recording_accesses', 'idx_recording_access_source', 'CREATE INDEX idx_recording_access_source ON recording_accesses (source)'],
+  ['giveaways', 'idx_giveaways_active_draw', 'CREATE INDEX idx_giveaways_active_draw ON giveaways (is_active, draw_at)'],
+  ['giveaways', 'idx_giveaways_archived', 'CREATE INDEX idx_giveaways_archived ON giveaways (archived_at, is_active)'],
+  ['giveaway_entries', 'idx_giveaway_entries_status', 'CREATE INDEX idx_giveaway_entries_status ON giveaway_entries (giveaway_id, status)'],
+  ['giveaway_entries', 'idx_giveaway_entries_person', 'CREATE INDEX idx_giveaway_entries_person ON giveaway_entries (person_id)'],
   ['scheduled_messages', 'idx_scheduled_due', 'CREATE INDEX idx_scheduled_due ON scheduled_messages (send_at, sent_at, failed_at)'],
   ['broadcast_campaigns', 'idx_campaigns_status', 'CREATE INDEX idx_campaigns_status ON broadcast_campaigns (status)'],
   ['broadcast_messages', 'idx_broadcast_messages_queue', 'CREATE INDEX idx_broadcast_messages_queue ON broadcast_messages (status, id)'],

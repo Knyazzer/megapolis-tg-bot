@@ -1,5 +1,5 @@
 import { isSqlite, query, queryOne } from '../db/mysql.js';
-import { nowSql } from '../utils/dates.js';
+import { formatSqlDate, nowSql } from '../utils/dates.js';
 
 const REGISTRATION_FIELDS = [
   'attendance',
@@ -29,14 +29,17 @@ export class RegistrationsRepository {
   }
 
   async listByPerson(personId) {
+    const now = formatSqlDate(new Date());
     return query(
       `SELECT r.*, e.title, e.date_start, e.date_end, e.online_start, e.address
        FROM registrations r
        JOIN events e ON e.id = r.event_id
-       WHERE r.person_id = :personId AND r.archived_at IS NULL
+       WHERE r.person_id = :personId
+         AND r.archived_at IS NULL
+         AND e.date_end >= :now
        ORDER BY e.date_start ASC, r.created_at DESC
        LIMIT 10`,
-      { personId },
+      { personId, now },
     );
   }
 
