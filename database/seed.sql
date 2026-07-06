@@ -39,3 +39,30 @@ INSERT INTO events (
   facecast_event_id = VALUES(facecast_event_id),
   facecast_url = VALUES(facecast_url),
   updated_at = NOW();
+
+INSERT INTO giveaways (
+  slug,
+  title,
+  description,
+  prize,
+  draw_at,
+  result_url,
+  is_active,
+  created_at,
+  updated_at
+) VALUES (
+  'intercomm-2026-naekk',
+  'Розыгрыш 2 билетов на премию ИнтерКомм 2026',
+  'В честь коллаборации Мегаполис Медиа и НАЭКК и выхода подкаста «Ларисочная беседка» — разговор о корпоративных коммуникациях без глянца, про профессию, решения и людей, которые за ними стоят.',
+  '2 билета на XVII Международную премию в области корпоративных коммуникаций ИнтерКомм 2026',
+  '2026-11-12 00:00:00',
+  NULL,
+  1,
+  NOW(),
+  NOW()
+) ON DUPLICATE KEY UPDATE
+  title = VALUES(title),
+  description = VALUES(description),
+  prize = VALUES(prize),
+  draw_at = VALUES(draw_at),
+  updated_at = NOW();

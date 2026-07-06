@@ -254,6 +254,33 @@ function ensureSqliteSchema(database) {
       FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS giveaways (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      description TEXT NULL,
+      prize TEXT NULL,
+      draw_at TEXT NULL,
+      result_url TEXT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      archived_at TEXT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS giveaway_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      giveaway_id INTEGER NOT NULL,
+      person_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'entered',
+      source TEXT NOT NULL DEFAULT 'bot',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (giveaway_id, person_id),
+      FOREIGN KEY (giveaway_id) REFERENCES giveaways(id) ON DELETE CASCADE,
+      FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS scheduled_messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       registration_id INTEGER NULL,
@@ -327,6 +354,9 @@ function ensureSqliteSchema(database) {
     CREATE INDEX IF NOT EXISTS idx_chat_created ON chat_messages (created_at);
     CREATE INDEX IF NOT EXISTS idx_recording_access_event ON recording_accesses (event_id);
     CREATE INDEX IF NOT EXISTS idx_recording_access_source ON recording_accesses (source);
+    CREATE INDEX IF NOT EXISTS idx_giveaways_active_draw ON giveaways (is_active, draw_at);
+    CREATE INDEX IF NOT EXISTS idx_giveaway_entries_status ON giveaway_entries (giveaway_id, status);
+    CREATE INDEX IF NOT EXISTS idx_giveaway_entries_person ON giveaway_entries (person_id);
 
     CREATE TABLE IF NOT EXISTS bot_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -360,7 +390,10 @@ function ensureSqliteSchema(database) {
   ensureSqliteColumn(database, 'chat_messages', 'media_file_id', 'TEXT NULL');
   ensureSqliteColumn(database, 'chat_messages', 'media_name', 'TEXT NULL');
   ensureSqliteColumn(database, 'chat_messages', 'media_mime', 'TEXT NULL');
+  ensureSqliteColumn(database, 'giveaways', 'archived_at', 'TEXT NULL');
   database.exec('CREATE INDEX IF NOT EXISTS idx_registrations_archived ON registrations (archived_at)');
+  database.exec('CREATE INDEX IF NOT EXISTS idx_giveaways_archived ON giveaways (archived_at, is_active)');
+  ensureSqliteDefaultGiveaway(database);
 
   const count = database.prepare('SELECT COUNT(*) AS total FROM events').get();
   if (Number(count.total || 0) > 0) {
@@ -382,6 +415,29 @@ function ensureSqliteSchema(database) {
     address: 'Знаменка 13с1, этаж 7, офис 25',
     facecastEventId: '186673',
     facecastUrl: 'https://facecast.net/w/6k2njf',
+    now: nowSql(),
+  });
+}
+
+function ensureSqliteDefaultGiveaway(database) {
+  const existing = database
+    .prepare("SELECT id FROM giveaways WHERE slug = 'intercomm-2026-naekk' LIMIT 1")
+    .get();
+  if (existing) {
+    return;
+  }
+
+  database.prepare(`
+    INSERT INTO giveaways
+      (slug, title, description, prize, draw_at, result_url, is_active, created_at, updated_at)
+    VALUES
+      (:slug, :title, :description, :prize, :drawAt, NULL, 1, :now, :now)
+  `).run({
+    slug: 'intercomm-2026-naekk',
+    title: 'Розыгрыш 2 билетов на премию ИнтерКомм 2026',
+    description: 'В честь коллаборации Мегаполис Медиа и НАЭКК и выхода подкаста «Ларисочная беседка» — разговор о корпоративных коммуникациях без глянца, про профессию, решения и людей, которые за ними стоят.',
+    prize: '2 билета на XVII Международную премию в области корпоративных коммуникаций ИнтерКомм 2026',
+    drawAt: '2026-11-12 00:00:00',
     now: nowSql(),
   });
 }

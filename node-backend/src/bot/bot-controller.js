@@ -8,6 +8,7 @@ import {
 import { PeopleRepository, profileComplete } from '../repositories/people-repository.js';
 import { RegistrationsRepository } from '../repositories/registrations-repository.js';
 import { RecordingAccessesRepository } from '../repositories/recording-accesses-repository.js';
+import { GiveawaysRepository } from '../repositories/giveaways-repository.js';
 import { ChatRepository } from '../repositories/chat-repository.js';
 import { FacecastClient } from '../services/facecast-client.js';
 import { ReminderPlanner } from '../services/reminder-planner.js';
@@ -35,6 +36,7 @@ export class BotController {
     this.events = new EventsRepository();
     this.registrations = new RegistrationsRepository();
     this.recordingAccesses = new RecordingAccessesRepository();
+    this.giveaways = new GiveawaysRepository();
     this.chat = new ChatRepository();
     this.facecast = new FacecastClient();
     this.planner = new ReminderPlanner();
@@ -146,6 +148,14 @@ export class BotController {
       return;
     }
 
+    if (this.isGiveawayText(text)) {
+      if (!(await this.ensureProfileReady(chatId, person))) {
+        return;
+      }
+      await this.sendGiveaways(chatId, person);
+      return;
+    }
+
     if (this.isSocialsText(text)) {
       await this.sendSocialLinks(chatId);
       return;
@@ -212,6 +222,40 @@ export class BotController {
         return;
       }
       await this.sendRecordingsArchive(chatId);
+      return;
+    }
+
+    if (data === 'giveaways') {
+      if (!(await this.ensureProfileReady(chatId, person))) {
+        return;
+      }
+      await this.sendGiveaways(chatId, person);
+      return;
+    }
+
+    if (data.startsWith('giveaway:')) {
+      if (!(await this.ensureProfileReady(chatId, person))) {
+        return;
+      }
+      const giveaway = await this.giveaways.findActiveById(Number(data.slice(9)));
+      if (giveaway) {
+        await this.sendGiveawayDetails(chatId, person, giveaway);
+      } else {
+        await this.sendGiveawayUnavailable(chatId);
+      }
+      return;
+    }
+
+    if (data.startsWith('giveaway_enter:')) {
+      if (!(await this.ensureProfileReady(chatId, person))) {
+        return;
+      }
+      const giveaway = await this.giveaways.findActiveById(Number(data.slice(15)));
+      if (giveaway) {
+        await this.enterGiveaway(chatId, person, giveaway);
+      } else {
+        await this.sendGiveawayUnavailable(chatId);
+      }
       return;
     }
 
@@ -515,7 +559,7 @@ export class BotController {
     if (rows.length === 0 && recordingRows.length === 0) {
       await this.telegram.sendMessage(
         chatId,
-        '<b>Активных регистраций пока нет.</b>\n\nОткройте ближайшие мероприятия и выберите удобный формат участия 🙂',
+        '<b>Активных регистраций и доступных записей пока нет.</b>\n\nОткройте ближайшие мероприятия и выберите удобный формат участия 🙂',
         mainMenuKeyboard(),
       );
       return;
@@ -559,7 +603,7 @@ export class BotController {
 
     await this.telegram.sendMessage(
       chatId,
-      `<b>Ваши регистрации</b>\n\n${sections.join('\n\n')}`,
+      `<b>Ваши мероприятия</b>\n\n${sections.join('\n\n')}`,
       recordingRows.length > 0 ? inlineKeyboard(recordingButtons) : mainMenuKeyboard(),
     );
   }
@@ -606,6 +650,96 @@ export class BotController {
       chatId,
       '<b>Записи эфиров 🎬</b>\n\nВыберите трансляцию. Мы оформим доступ и пришлём ссылку на просмотр записи.',
       inlineKeyboard(buttons),
+    );
+  }
+
+  async sendGiveaways(chatId, person) {
+    const giveaways = await this.giveaways.listActive();
+    if (giveaways.length === 0) {
+      await this.telegram.sendMessage(
+        chatId,
+        '<b>Активных розыгрышей пока нет.</b>\n\nКак только появится новая акция, мы расскажем здесь и в канале Мегаполис Медиа.',
+        mainMenuKeyboard(),
+      );
+      return;
+    }
+
+    if (giveaways.length === 1) {
+      await this.sendGiveawayDetails(chatId, person, giveaways[0]);
+      return;
+    }
+
+    const buttons = giveaways.map((giveaway) => [{
+      text: this.shortButtonText(giveaway.title),
+      callback_data: `giveaway:${giveaway.id}`,
+    }]);
+    buttons.push([{ text: 'Главное меню', callback_data: 'main_menu' }]);
+    await this.telegram.sendMessage(
+      chatId,
+      '<b>Активные розыгрыши 🎁</b>\n\nВыберите розыгрыш, в котором хотите участвовать.',
+      inlineKeyboard(buttons),
+    );
+  }
+
+  async sendGiveawayDetails(chatId, person, giveaway) {
+    const existing = await this.giveaways.findEntry(giveaway.id, person.id);
+    const buttons = [];
+    if (!existing || existing.status === 'cancelled') {
+      buttons.push([{
+        text: this.giveawayEnterButtonText(giveaway),
+        callback_data: `giveaway_enter:${giveaway.id}`,
+      }]);
+    }
+    buttons.push([{ text: 'Телеграм канал', url: config.links.telegramChannel }]);
+    buttons.push([{ text: 'Главное меню', callback_data: 'main_menu' }]);
+
+    const text = this.giveawayDetailsText(giveaway)
+      + (existing && existing.status !== 'cancelled'
+        ? '\n\n<b>Вы уже участвуете.</b> Заявка принята, дополнительно ничего нажимать не нужно.'
+        : '');
+    await this.telegram.sendMessage(chatId, text, inlineKeyboard(buttons));
+  }
+
+  async enterGiveaway(chatId, person, giveaway) {
+    const result = await this.giveaways.enter(giveaway.id, person.id);
+    const intro = result.created
+      ? '<b>Готово, вы участвуете в розыгрыше 🎁</b>'
+      : '<b>Вы уже участвуете в розыгрыше 🎁</b>';
+    const drawDate = giveaway.draw_at ? dateShort(giveaway.draw_at) : 'дату сообщим отдельно';
+    const prize = giveaway.prize || giveaway.title || 'приз розыгрыша';
+    await this.telegram.sendMessage(
+      chatId,
+      `${intro}\n\n<b>Разыгрываем:</b>\n${h(prize)}\n\n<b>Дата события:</b> ${h(drawDate)}\n\nИтоги подведём рандомайзером, а запись розыгрыша опубликуем в Telegram-канале Мегаполис Медиа.\n\nДержим за вас кулачки, но делаем вид, что это деловая переписка 🙂`,
+      inlineKeyboard([
+        [{ text: 'Телеграм канал Мегаполис Медиа', url: config.links.telegramChannel }],
+        [{ text: 'Главное меню', callback_data: 'main_menu' }],
+      ]),
+    );
+  }
+
+  giveawayEnterButtonText(giveaway) {
+    if (giveaway.slug === 'intercomm-2026-naekk') {
+      return 'Участвовать в розыгрыше 2 билетов на премию ИнтерКомм';
+    }
+
+    return 'Участвовать в розыгрыше';
+  }
+
+  giveawayDetailsText(giveaway) {
+    const drawDate = giveaway.draw_at ? dateShort(giveaway.draw_at) : 'дату сообщим отдельно';
+    return `<b>${h(giveaway.title || 'Розыгрыш')} 🎁</b>\n\n`
+      + `${h(giveaway.description || 'Нажмите кнопку ниже, чтобы принять участие.')}\n\n`
+      + '<b>Что разыгрываем:</b>\n'
+      + `${h(giveaway.prize || 'Приз розыгрыша')}\n\n`
+      + `<b>Когда событие:</b> ${h(drawDate)}\n\n`
+      + 'Чтобы участвовать, нажмите кнопку ниже. Итоги подведём среди тех, кто нажал кнопку участия. Запись розыгрыша рандомайзером выложим в Telegram-канале Мегаполис Медиа.';
+  }
+
+  async sendGiveawayUnavailable(chatId) {
+    await this.telegram.sendMessage(
+      chatId,
+      '<b>Этот розыгрыш сейчас недоступен.</b>\n\nПроверьте активные розыгрыши в главном меню.',
+      mainMenuKeyboard(),
     );
   }
 
@@ -1119,6 +1253,20 @@ export class BotController {
 
   isRecordingsArchiveText(text) {
     return ['/recordings', 'Записи эфиров', '🎬 Записи эфиров', 'Архив эфиров', '🎬 Архив эфиров'].includes(text);
+  }
+
+  isGiveawayText(text) {
+    return [
+      '/giveaway',
+      '/giveaways',
+      'Розыгрыш',
+      '🎁 Розыгрыш',
+      'Розыгрыши',
+      '🎁 Розыгрыши',
+      'Розыгрыш ИнтерКомм',
+      '🎁 Розыгрыш ИнтерКомм',
+      'Участвовать в розыгрыше 2 билетов на премию ИнтерКомм',
+    ].includes(text);
   }
 
   isSocialsText(text) {
