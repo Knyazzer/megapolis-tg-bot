@@ -111,6 +111,8 @@ export class AdminController {
         await this.saveEvent(form);
       } else if (action === 'approve_registration') {
         await this.approveRegistration(form);
+      } else if (action === 'resend_offline_approval') {
+        await this.resendOfflineApproval(form);
       } else if (action === 'reject_registration') {
         await this.rejectRegistration(form);
       } else if (action === 'archive_registration') {
@@ -189,6 +191,7 @@ export class AdminController {
       'archive_registration',
       'restore_registration',
       'sync_facecast_registration',
+      'resend_offline_approval',
     ].includes(action)) {
       const row = await this.registrationRow(Number(form.id || 0));
       return json({
@@ -1725,15 +1728,64 @@ export class AdminController {
 
   async approveRegistration(form) {
     let registration = await this.registrationWithDetails(Number(form.id || 0));
-    if (!registration) throw new Error('Регистрация не найдена');
+    if (!registration || registration.attendance !== 'offline') throw new Error('Офлайн-регистрация не найдена');
+    if (['approved', 'visited'].includes(String(registration.status || ''))) {
+      await this.sendOfflineApproved(registration);
+      this.flash('Подтверждение отправлено повторно');
+      return;
+    }
+    if (String(registration.status || '') !== 'pending') {
+      throw new Error('Подтвердить можно только заявку на проверке');
+    }
+
+    const previousStatus = String(registration.status || 'pending');
     await execute("UPDATE registrations SET status = 'approved', archived_at = NULL, approved_at = :now, updated_at = :now WHERE id = :id", {
       id: registration.id,
       now: nowSql(),
     });
     registration = await this.registrationWithDetails(Number(registration.id));
-    await this.planner.planOfflineApproved(registration, registration);
+    try {
+      await this.sendOfflineApproved(registration);
+    } catch (error) {
+      await execute('UPDATE registrations SET status = :status, approved_at = NULL, updated_at = :now WHERE id = :id', {
+        id: registration.id,
+        status: previousStatus,
+        now: nowSql(),
+      });
+      try {
+        await this.planner.cancelOffline(registration);
+      } catch (cancelError) {
+        logger.warn('failed to cancel offline reminders after approval rollback', {
+          registrationId: registration.id,
+          message: cancelError.message,
+        });
+      }
+      throw new Error(`Не удалось отправить подтверждение участнику: ${error.message}`);
+    }
+
+    try {
+      await this.planner.planOfflineApproved(registration, registration);
+    } catch (error) {
+      logger.error('failed to schedule offline reminders after approval', {
+        registrationId: registration.id,
+        message: error.message,
+        stack: error.stack,
+      });
+      this.flash('Офлайн-регистрация подтверждена, но напоминания не удалось запланировать', 'error');
+      return;
+    }
+
+    this.flash('Офлайн-регистрация подтверждена, сообщение отправлено');
+  }
+
+  async resendOfflineApproval(form) {
+    const registration = await this.registrationWithDetails(Number(form.id || 0));
+    if (!registration || registration.attendance !== 'offline') throw new Error('Офлайн-регистрация не найдена');
+    if (!['approved', 'visited'].includes(String(registration.status || ''))) {
+      throw new Error('Повторить подтверждение можно только для подтвержденного офлайн-гостя');
+    }
     await this.sendOfflineApproved(registration);
-    this.flash('Офлайн-регистрация подтверждена');
+    this.flash('Подтверждение отправлено повторно');
   }
 
   async rejectRegistration(form) {
@@ -2383,6 +2435,11 @@ export class AdminController {
   }
 
   async sendOfflineApproved(row) {
+    const telegramId = Number(row.telegram_id || 0);
+    const personId = Number(row.person_id || 0);
+    if (!telegramId) throw new Error('У участника нет Telegram ID');
+    if (!personId) throw new Error('У участника нет ID контакта');
+
     const text = '<b>Офлайн-участие подтверждено 🏢</b>\n\n'
       + 'Ждём вас на мероприятии:\n'
       + `<b>Название:</b> ${h(row.title)}\n`
@@ -2392,9 +2449,69 @@ export class AdminController {
       + `<b>Наш адрес:</b> ${h(row.address || '')}\n`
       + '<b>Формат:</b> офлайн\n\n'
       + 'Перед событием пришлём напоминание. Маршрут держим под рукой, хорошее настроение тоже.';
-    await this.telegram.sendMessage(Number(row.telegram_id), text);
-    if (row.venue_lat !== null && row.venue_lng !== null) {
-      await this.telegram.sendVenue(Number(row.telegram_id), Number(row.venue_lat), Number(row.venue_lng), 'Мегаполис Медиа', String(row.address || ''));
+    await this.sendTrackedTelegramMessage({ personId, telegramId, text, messageType: 'bot' });
+    await this.trySendOfflineVenue({ row, personId, telegramId });
+  }
+
+  async sendTrackedTelegramMessage({ personId, telegramId, text, replyMarkup = {}, messageType = 'bot' }) {
+    try {
+      const result = await this.telegram.sendMessage(telegramId, text, replyMarkup);
+      await this.recordAdminOutgoing({ personId, telegramId, text, messageType, status: 'sent' });
+      return result;
+    } catch (error) {
+      await this.recordAdminOutgoing({ personId, telegramId, text, messageType, status: 'failed', error: error.message });
+      throw error;
+    }
+  }
+
+  async trySendOfflineVenue({ row, personId, telegramId }) {
+    const coordinates = this.venueCoordinates(row);
+    if (!coordinates) {
+      return;
+    }
+
+    const text = ['Мегаполис Медиа', row.address].filter(Boolean).join('\n');
+    try {
+      await this.telegram.sendVenue(telegramId, coordinates.lat, coordinates.lng, 'Мегаполис Медиа', String(row.address || ''));
+      await this.recordAdminOutgoing({ personId, telegramId, text, messageType: 'bot_venue', status: 'sent' });
+    } catch (error) {
+      await this.recordAdminOutgoing({ personId, telegramId, text, messageType: 'bot_venue', status: 'failed', error: error.message });
+      logger.warn('failed to send offline approval venue', {
+        registrationId: row.id,
+        personId,
+        telegramId,
+        message: error.message,
+      });
+    }
+  }
+
+  venueCoordinates(row) {
+    const rawLat = row.venue_lat;
+    const rawLng = row.venue_lng;
+    if (rawLat === null || rawLat === undefined || rawLng === null || rawLng === undefined) {
+      return null;
+    }
+    if (String(rawLat).trim() === '' || String(rawLng).trim() === '') {
+      return null;
+    }
+
+    const lat = Number(rawLat);
+    const lng = Number(rawLng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      return null;
+    }
+    return { lat, lng };
+  }
+
+  async recordAdminOutgoing(payload) {
+    try {
+      await this.chat.recordOutgoing(payload);
+    } catch (error) {
+      logger.warn('failed to record admin bot message', {
+        personId: payload.personId,
+        telegramId: payload.telegramId,
+        message: error.message,
+      });
     }
   }
 
@@ -2673,6 +2790,9 @@ export class AdminController {
     if (row.attendance === 'offline' && row.status === 'pending') {
       actions.push(this.registrationActionForm(row, 'approve_registration', 'Подтвердить', 'button button-primary', 'approved', ret));
       actions.push(this.registrationActionForm(row, 'reject_registration', 'Отказать', 'button danger', 'rejected', ret));
+    }
+    if (row.attendance === 'offline' && ['approved', 'visited'].includes(String(row.status || ''))) {
+      actions.push(this.registrationActionForm(row, 'resend_offline_approval', 'Повторить подтверждение', 'button muted-button', this.registrationState(row), ret));
     }
     if (this.canSyncFacecast(row)) {
       actions.push(this.registrationActionForm(row, 'sync_facecast_registration', 'Обновить просмотр', 'button muted-button', '', ret));
