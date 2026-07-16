@@ -184,6 +184,7 @@ export class AdminController {
   }
 
   async ajaxActionResult(action, form) {
+    const flash = this.session.flash;
     this.session.flash = null;
     if ([
       'approve_registration',
@@ -205,6 +206,7 @@ export class AdminController {
         createdAt: row?.created_at || '',
         cardHtml: row ? this.registrationCard(row) : '',
         tableRowHtml: row ? this.registrationTableRow(row, true) : '',
+        warning: flash?.type === 'error' ? flash.message : '',
       });
     }
 
@@ -1738,44 +1740,45 @@ export class AdminController {
       throw new Error('Подтвердить можно только заявку на проверке');
     }
 
-    const previousStatus = String(registration.status || 'pending');
     await execute("UPDATE registrations SET status = 'approved', archived_at = NULL, approved_at = :now, updated_at = :now WHERE id = :id", {
       id: registration.id,
       now: nowSql(),
     });
     registration = await this.registrationWithDetails(Number(registration.id));
+
+    let sendError = null;
     try {
       await this.sendOfflineApproved(registration);
     } catch (error) {
-      await execute('UPDATE registrations SET status = :status, approved_at = NULL, updated_at = :now WHERE id = :id', {
-        id: registration.id,
-        status: previousStatus,
-        now: nowSql(),
+      sendError = error;
+      logger.warn('offline approval notification failed after approval', {
+        registrationId: registration.id,
+        personId: registration.person_id,
+        message: error.message,
       });
-      try {
-        await this.planner.cancelOffline(registration);
-      } catch (cancelError) {
-        logger.warn('failed to cancel offline reminders after approval rollback', {
-          registrationId: registration.id,
-          message: cancelError.message,
-        });
-      }
-      throw new Error(`Не удалось отправить подтверждение участнику: ${error.message}`);
     }
 
+    let remindersError = null;
     try {
       await this.planner.planOfflineApproved(registration, registration);
     } catch (error) {
+      remindersError = error;
       logger.error('failed to schedule offline reminders after approval', {
         registrationId: registration.id,
         message: error.message,
         stack: error.stack,
       });
-      this.flash('Офлайн-регистрация подтверждена, но напоминания не удалось запланировать', 'error');
-      return;
     }
 
-    this.flash('Офлайн-регистрация подтверждена, сообщение отправлено');
+    if (sendError && remindersError) {
+      this.flash('Офлайн-регистрация подтверждена, но сообщение не удалось отправить, а напоминания не удалось запланировать. Нажмите «Повторить подтверждение» и проверьте очередь напоминаний.', 'error');
+    } else if (sendError) {
+      this.flash('Офлайн-регистрация подтверждена, но сообщение не удалось отправить. Нажмите «Повторить подтверждение».', 'error');
+    } else if (remindersError) {
+      this.flash('Офлайн-регистрация подтверждена, сообщение отправлено, но напоминания не удалось запланировать.', 'error');
+    } else {
+      this.flash('Офлайн-регистрация подтверждена, сообщение отправлено');
+    }
   }
 
   async resendOfflineApproval(form) {

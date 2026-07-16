@@ -391,6 +391,9 @@
       } else {
         applyRegistrationRowResult(row, payload, snapshot);
       }
+      if (payload.warning) {
+        window.alert(payload.warning);
+      }
     }).catch(function () {
       form.dataset.pending = '';
       setRegistrationBusy(target, false);
