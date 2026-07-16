@@ -64,10 +64,10 @@ export class BotController {
       return;
     }
 
-    const person = await this.people.upsertFromTelegram(from);
+    let person = await this.people.upsertFromTelegram(from);
     const text = String(message.text || '').trim();
     const messageText = String(message.text || message.caption || '').trim();
-    const state = String(person.state || 'new');
+    let state = String(person.state || 'new');
     const delayCreativeBriefRecord = this.shouldDelayCreativeBriefRecord(person, state, text, messageText);
     if (!delayCreativeBriefRecord) {
       await this.recordIncomingChatMessage(person, chatId, message);
@@ -100,6 +100,11 @@ export class BotController {
     if (this.isCreativeIdeaText(text)) {
       await this.startCreativeBrief(chatId, person);
       return;
+    }
+
+    if (this.isCreativeBriefState(state) && this.isCreativeBriefNavigationText(text)) {
+      person = await this.restoreCreativeBriefStateIfNeeded(person);
+      state = String(person.state || 'new');
     }
 
     if (this.isCreativeBriefState(state)) {
@@ -191,7 +196,10 @@ export class BotController {
       return;
     }
 
-    const person = await this.people.upsertFromTelegram(from);
+    let person = await this.people.upsertFromTelegram(from);
+    if (this.shouldRestoreCreativeBriefForCallback(data)) {
+      person = await this.restoreCreativeBriefStateIfNeeded(person);
+    }
 
     if (data === 'start_registration') {
       await this.people.setState(person.id, 'awaiting_consent');
@@ -1290,7 +1298,7 @@ export class BotController {
       return false;
     }
 
-    return !this.isMainMenuText(text) && text !== '/menu' && !this.isCreativeIdeaText(text);
+    return !this.isCreativeBriefNavigationText(text) && !this.isCreativeIdeaText(text);
   }
 
   creativeBriefPreviousState(state) {
@@ -1298,6 +1306,22 @@ export class BotController {
     if (!this.isCreativeBriefState(value)) return '';
     const previous = value.split(':').slice(1).join(':').trim();
     return previous && previous.length <= 48 ? previous : 'registered';
+  }
+
+  isCreativeBriefNavigationText(text) {
+    return this.isMainMenuText(text)
+      || text === '/menu'
+      || this.isStartRegistrationText(text)
+      || this.isConsentText(text)
+      || this.isEventsText(text)
+      || this.isRecordingsArchiveText(text)
+      || this.isGiveawayText(text)
+      || this.isSocialsText(text)
+      || this.isMyRegistrationsText(text);
+  }
+
+  shouldRestoreCreativeBriefForCallback(data) {
+    return !['start_registration', 'consent_accept'].includes(String(data || ''));
   }
 
   isPhoneButtonText(text) {
