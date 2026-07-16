@@ -33,10 +33,8 @@ export function consentKeyboard() {
 export function mainMenuKeyboard() {
   return replyKeyboard([
     [{ text: '🗓 Мероприятия' }, { text: '👤 Мои регистрации' }],
-    [{ text: '🎬 Записи эфиров' }],
-    [{ text: '🎁 Розыгрыши' }],
-    [{ text: '💡 Получить идею' }],
-    [{ text: '🌐 Соцсети' }, { text: '🏠 Главное меню' }],
+    [{ text: '🎬 Записи эфиров' }, { text: '🎁 Розыгрыши' }],
+    [{ text: '💡 Получить идею' }, { text: '🌐 Соцсети' }],
   ], {
     is_persistent: true,
     input_field_placeholder: 'Выберите действие',

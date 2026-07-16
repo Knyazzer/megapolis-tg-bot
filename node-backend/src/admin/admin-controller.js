@@ -12,7 +12,11 @@ import { ChatRepository } from '../repositories/chat-repository.js';
 import { FacecastClient } from '../services/facecast-client.js';
 import { GiveawaysRepository } from '../repositories/giveaways-repository.js';
 import { ReminderPlanner } from '../services/reminder-planner.js';
-import { TelegramClient } from '../services/telegram-client.js';
+import {
+  isTelegramRetryableError,
+  TelegramClient,
+  telegramDeliveryErrorMessage,
+} from '../services/telegram-client.js';
 import { dateShort, formatSqlDate, nowSql, parseDate, shiftDate, timeOnly, timeRange } from '../utils/dates.js';
 import { h } from '../utils/html.js';
 import { logger } from '../utils/logger.js';
@@ -1761,7 +1765,7 @@ export class AdminController {
     let remindersError = null;
     try {
       await this.planner.planOfflineApproved(registration, registration);
-      if (sendError) {
+      if (sendError && isTelegramRetryableError(sendError)) {
         await this.planner.planOfflineApprovalNoticeRetry(registration, registration);
       }
     } catch (error) {
@@ -1773,10 +1777,14 @@ export class AdminController {
       });
     }
 
-    if (sendError && remindersError) {
+    if (sendError && remindersError && isTelegramRetryableError(sendError)) {
       this.flash('Офлайн-регистрация подтверждена, но сообщение не удалось отправить, а повторную отправку и напоминания не удалось запланировать. Нажмите «Повторить подтверждение».', 'error');
-    } else if (sendError) {
+    } else if (sendError && remindersError) {
+      this.flash(`Офлайн-регистрация подтверждена, но сообщение не доставлено и напоминания не запланированы. ${telegramDeliveryErrorMessage(sendError)}`, 'error');
+    } else if (sendError && isTelegramRetryableError(sendError)) {
       this.flash('Офлайн-регистрация подтверждена, но Telegram не принял сообщение сразу. Мы поставили подтверждение в очередь повторной отправки.', 'error');
+    } else if (sendError) {
+      this.flash(`Офлайн-регистрация подтверждена, но сообщение не доставлено. ${telegramDeliveryErrorMessage(sendError)}`, 'error');
     } else if (remindersError) {
       this.flash('Офлайн-регистрация подтверждена, сообщение отправлено, но напоминания не удалось запланировать.', 'error');
     } else {
@@ -1794,13 +1802,21 @@ export class AdminController {
       await this.sendOfflineApproved(registration);
       this.flash('Подтверждение отправлено повторно');
     } catch (error) {
-      await this.planner.planOfflineApprovalNoticeRetry(registration, registration);
-      logger.warn('offline approval resend failed, queued retry', {
+      const retryable = isTelegramRetryableError(error);
+      if (retryable) {
+        await this.planner.planOfflineApprovalNoticeRetry(registration, registration);
+      }
+      logger.warn(retryable ? 'offline approval resend failed, queued retry' : 'offline approval resend permanently rejected', {
         registrationId: registration.id,
         personId: registration.person_id,
         message: error.message,
       });
-      this.flash('Telegram не принял повторное подтверждение сразу. Мы поставили его в очередь повторной отправки.', 'error');
+      this.flash(
+        retryable
+          ? 'Telegram не принял повторное подтверждение сразу. Мы поставили его в очередь повторной отправки.'
+          : telegramDeliveryErrorMessage(error),
+        'error',
+      );
     }
   }
 
