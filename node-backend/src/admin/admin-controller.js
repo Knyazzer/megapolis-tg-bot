@@ -1761,6 +1761,9 @@ export class AdminController {
     let remindersError = null;
     try {
       await this.planner.planOfflineApproved(registration, registration);
+      if (sendError) {
+        await this.planner.planOfflineApprovalNoticeRetry(registration, registration);
+      }
     } catch (error) {
       remindersError = error;
       logger.error('failed to schedule offline reminders after approval', {
@@ -1771,9 +1774,9 @@ export class AdminController {
     }
 
     if (sendError && remindersError) {
-      this.flash('Офлайн-регистрация подтверждена, но сообщение не удалось отправить, а напоминания не удалось запланировать. Нажмите «Повторить подтверждение» и проверьте очередь напоминаний.', 'error');
+      this.flash('Офлайн-регистрация подтверждена, но сообщение не удалось отправить, а повторную отправку и напоминания не удалось запланировать. Нажмите «Повторить подтверждение».', 'error');
     } else if (sendError) {
-      this.flash('Офлайн-регистрация подтверждена, но сообщение не удалось отправить. Нажмите «Повторить подтверждение».', 'error');
+      this.flash('Офлайн-регистрация подтверждена, но Telegram не принял сообщение сразу. Мы поставили подтверждение в очередь повторной отправки.', 'error');
     } else if (remindersError) {
       this.flash('Офлайн-регистрация подтверждена, сообщение отправлено, но напоминания не удалось запланировать.', 'error');
     } else {
@@ -1787,8 +1790,18 @@ export class AdminController {
     if (!['approved', 'visited'].includes(String(registration.status || ''))) {
       throw new Error('Повторить подтверждение можно только для подтвержденного офлайн-гостя');
     }
-    await this.sendOfflineApproved(registration);
-    this.flash('Подтверждение отправлено повторно');
+    try {
+      await this.sendOfflineApproved(registration);
+      this.flash('Подтверждение отправлено повторно');
+    } catch (error) {
+      await this.planner.planOfflineApprovalNoticeRetry(registration, registration);
+      logger.warn('offline approval resend failed, queued retry', {
+        registrationId: registration.id,
+        personId: registration.person_id,
+        message: error.message,
+      });
+      this.flash('Telegram не принял повторное подтверждение сразу. Мы поставили его в очередь повторной отправки.', 'error');
+    }
   }
 
   async rejectRegistration(form) {

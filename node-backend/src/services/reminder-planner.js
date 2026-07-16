@@ -25,6 +25,10 @@ export class ReminderPlanner {
     await this.planPostPromo(registration, event);
   }
 
+  async planOfflineApprovalNoticeRetry(registration, event, sendAt = shiftDate(nowSql(), 60 * 1000)) {
+    await this.schedule(registration, event, 'offline_approved', sendAt, { attempts: 0 });
+  }
+
   async planPostPromo(registration, event) {
     await this.cancelTypes(registration, POSTPROMO_TYPES);
     const message = String(event?.postpromo_message || '').trim();
@@ -53,20 +57,22 @@ export class ReminderPlanner {
     await this.cancelTypes(registration, ALL_TYPES);
   }
 
-  async schedule(registration, event, type, sendAt) {
+  async schedule(registration, event, type, sendAt, payload = null) {
     if (sendAt <= new Date()) {
       return;
     }
 
     const now = nowSql();
+    const payloadText = payload === null ? null : JSON.stringify(payload);
     if (isSqlite()) {
       await query(
         `INSERT INTO scheduled_messages
           (registration_id, person_id, event_id, type, send_at, payload, created_at, updated_at)
          VALUES
-          (:registrationId, :personId, :eventId, :type, :sendAt, NULL, :now, :now)
+          (:registrationId, :personId, :eventId, :type, :sendAt, :payload, :now, :now)
          ON CONFLICT(registration_id, type) DO UPDATE SET
           send_at = excluded.send_at,
+          payload = excluded.payload,
           sent_at = NULL,
           failed_at = NULL,
           error = NULL,
@@ -77,6 +83,7 @@ export class ReminderPlanner {
           eventId: event.event_id || event.id,
           type,
           sendAt: formatSqlDate(sendAt),
+          payload: payloadText,
           now,
         },
       );
@@ -87,9 +94,10 @@ export class ReminderPlanner {
       `INSERT INTO scheduled_messages
         (registration_id, person_id, event_id, type, send_at, payload, created_at, updated_at)
        VALUES
-        (:registrationId, :personId, :eventId, :type, :sendAt, NULL, :now, :now)
+        (:registrationId, :personId, :eventId, :type, :sendAt, :payload, :now, :now)
        ON DUPLICATE KEY UPDATE
         send_at = VALUES(send_at),
+        payload = VALUES(payload),
         sent_at = NULL,
         failed_at = NULL,
         error = NULL,
@@ -100,6 +108,7 @@ export class ReminderPlanner {
         eventId: event.event_id || event.id,
         type,
         sendAt: formatSqlDate(sendAt),
+        payload: payloadText,
         now,
       },
     );

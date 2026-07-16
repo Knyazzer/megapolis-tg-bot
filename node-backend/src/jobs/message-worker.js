@@ -6,6 +6,9 @@ import { h } from '../utils/html.js';
 import { logger } from '../utils/logger.js';
 
 const facecast = new FacecastClient();
+const RETRYABLE_SCHEDULED_TYPES = new Set(['offline_approved']);
+const MAX_TRANSACTIONAL_RETRY_ATTEMPTS = 6;
+const TRANSACTIONAL_RETRY_DELAY_MS = 5 * 60 * 1000;
 
 export async function processDueMessages({ limit = 50, broadcastCampaignId = null } = {}) {
   const telegram = new TelegramClient();
@@ -139,7 +142,11 @@ async function processScheduledMessages(telegram, limit) {
       await markScheduledSent(row.id);
       sent += 1;
     } catch (error) {
-      await markScheduledFailed(row.id, error);
+      if (scheduledMessageShouldRetry(row)) {
+        await rescheduleScheduledRetry(row, error);
+      } else {
+        await markScheduledFailed(row.id, error);
+      }
       failed += 1;
       logger.warn('scheduled message failed', { id: row.id, message: error.message });
     }
@@ -373,6 +380,21 @@ function scheduledMessagePayload(row) {
     ];
   }
 
+  if (row.type === 'offline_approved') {
+    return [
+      '<b>Офлайн-участие подтверждено 🏢</b>\n\n'
+        + 'Ждём вас на мероприятии:\n'
+        + `<b>Название:</b> ${h(eventTitle)}\n`
+        + `<b>Дата:</b> ${h(date)}\n`
+        + `<b>Время:</b> ${h(range)}\n`
+        + `<b>Сбор гостей:</b> ${h(arrival)}\n`
+        + `<b>Наш адрес:</b> ${h(row.address || '')}\n`
+        + '<b>Формат:</b> офлайн\n\n'
+        + 'Перед событием пришлём напоминание. Маршрут держим под рукой, хорошее настроение тоже.',
+      {},
+    ];
+  }
+
   if (row.type === 'offline_2hours') {
     return [
       '<b>До офлайн-встречи осталось около двух часов 🙂</b>\n\n'
@@ -470,6 +492,42 @@ async function markScheduledFailed(id, error) {
     'UPDATE scheduled_messages SET failed_at = :now, error = :error, updated_at = :now WHERE id = :id',
     { id, error: error.message, now: nowSql() },
   );
+}
+
+function scheduledMessageShouldRetry(row) {
+  return RETRYABLE_SCHEDULED_TYPES.has(String(row.type || ''))
+    && scheduledRetryAttempts(row) < MAX_TRANSACTIONAL_RETRY_ATTEMPTS;
+}
+
+async function rescheduleScheduledRetry(row, error) {
+  const attempts = scheduledRetryAttempts(row) + 1;
+  const retryAt = shiftDate(nowSql(), TRANSACTIONAL_RETRY_DELAY_MS);
+  await query(
+    `UPDATE scheduled_messages
+     SET send_at = :sendAt,
+         payload = :payload,
+         failed_at = NULL,
+         error = :error,
+         updated_at = :now
+     WHERE id = :id`,
+    {
+      id: row.id,
+      sendAt: formatSqlDate(retryAt),
+      payload: JSON.stringify({ attempts }),
+      error: error.message,
+      now: nowSql(),
+    },
+  );
+}
+
+function scheduledRetryAttempts(row) {
+  try {
+    const payload = JSON.parse(String(row.payload || '{}'));
+    const attempts = Number(payload?.attempts || 0);
+    return Number.isFinite(attempts) ? Math.max(0, attempts) : 0;
+  } catch {
+    return 0;
+  }
 }
 
 async function refreshCampaignStatuses(rows) {
