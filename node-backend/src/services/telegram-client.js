@@ -1,6 +1,19 @@
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 
+export class TelegramApiError extends Error {
+  constructor(method, responseStatus, payload = {}) {
+    const description = String(payload.description || 'Unknown Telegram API error');
+    super(`Telegram API error: ${description}`);
+    this.name = 'TelegramApiError';
+    this.method = method;
+    this.responseStatus = Number(responseStatus || 0);
+    this.errorCode = Number(payload.error_code || 0);
+    this.description = description;
+    this.parameters = payload.parameters || null;
+  }
+}
+
 export class TelegramClient {
   constructor({ webhookChatId = null, preferWebhookReply = false } = {}) {
     this.webhookChatId = webhookChatId;
@@ -31,7 +44,24 @@ export class TelegramClient {
         payload.reply_markup = replyMarkup;
       }
 
-      result = await this.api('sendMessage', payload);
+      try {
+        result = await this.api('sendMessage', payload);
+      } catch (error) {
+        if (!isTelegramParseError(error)) {
+          throw error;
+        }
+
+        const plainPayload = {
+          ...payload,
+          text: telegramHtmlToPlainText(chunk),
+        };
+        delete plainPayload.parse_mode;
+        logger.warn('telegram html rejected, retrying message as plain text', {
+          chatId,
+          description: error.description || error.message,
+        });
+        result = await this.api('sendMessage', plainPayload);
+      }
     }
 
     return result;
@@ -166,7 +196,7 @@ export class TelegramClient {
       });
       const decoded = await response.json();
       if (!decoded.ok) {
-        throw new Error(`Telegram API error: ${JSON.stringify(decoded)}`);
+        throw new TelegramApiError(method, response.status, decoded);
       }
       return decoded;
     } finally {
@@ -212,7 +242,7 @@ export class TelegramClient {
       });
       const decoded = await response.json();
       if (!decoded.ok) {
-        throw new Error(`Telegram API error: ${JSON.stringify(decoded)}`);
+        throw new TelegramApiError(method, response.status, decoded);
       }
       return decoded;
     } finally {
@@ -254,6 +284,55 @@ export class TelegramClient {
   }
 }
 
+export function isTelegramParseError(error) {
+  if (!(error instanceof TelegramApiError)) {
+    return false;
+  }
+
+  const description = error.description.toLowerCase();
+  return description.includes("can't parse entities")
+    || description.includes('cannot parse entities')
+    || description.includes('unsupported start tag')
+    || description.includes('unsupported end tag');
+}
+
+export function isTelegramRetryableError(error) {
+  if (!(error instanceof TelegramApiError)) {
+    return true;
+  }
+
+  if (error.errorCode === 429 || error.responseStatus === 429) {
+    return true;
+  }
+  if (error.errorCode >= 500 || error.responseStatus >= 500) {
+    return true;
+  }
+
+  return false;
+}
+
+export function telegramDeliveryErrorMessage(error) {
+  if (!(error instanceof TelegramApiError)) {
+    return 'Telegram временно недоступен. Сообщение можно повторить позже.';
+  }
+
+  const description = error.description.toLowerCase();
+  if (description.includes('bot was blocked by the user')) {
+    return 'Пользователь заблокировал бота. Telegram не сможет доставить ему подтверждение, пока он не разблокирует бота.';
+  }
+  if (description.includes('chat not found')) {
+    return 'Telegram не нашёл чат участника. Попросите его снова открыть бота и нажать /start.';
+  }
+  if (description.includes('user is deactivated')) {
+    return 'Telegram-аккаунт участника деактивирован, поэтому сообщение доставить нельзя.';
+  }
+  if (error.errorCode === 429) {
+    return 'Telegram временно ограничил частоту отправки. Подтверждение поставлено в очередь.';
+  }
+
+  return `Telegram отклонил сообщение: ${error.description}`;
+}
+
 function isUploadFile(value) {
   return Boolean(value && typeof value === 'object' && value.buffer);
 }
@@ -288,4 +367,16 @@ function splitText(text) {
     chunks.push(current);
   }
   return chunks;
+}
+
+function telegramHtmlToPlainText(text) {
+  return String(text || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0*39;/g, "'")
+    .replace(/&#x0*27;/gi, "'")
+    .replace(/&amp;/g, '&');
 }

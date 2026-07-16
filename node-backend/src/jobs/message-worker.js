@@ -1,7 +1,7 @@
 import { query, queryOne } from '../db/mysql.js';
 import { ChatRepository } from '../repositories/chat-repository.js';
 import { FacecastClient } from '../services/facecast-client.js';
-import { TelegramClient } from '../services/telegram-client.js';
+import { isTelegramRetryableError, TelegramClient } from '../services/telegram-client.js';
 import { dateShort, formatSqlDate, nowSql, shiftDate, timeOnly, timeRange } from '../utils/dates.js';
 import { h } from '../utils/html.js';
 import { logger } from '../utils/logger.js';
@@ -147,7 +147,7 @@ async function processScheduledMessages(telegram, limit) {
       await markScheduledSent(row.id);
       sent += 1;
     } catch (error) {
-      if (scheduledMessageShouldRetry(row)) {
+      if (scheduledMessageShouldRetry(row, error)) {
         await rescheduleScheduledRetry(row, error);
       } else {
         await recordScheduledOutgoing(row, text, 'failed', error);
@@ -530,8 +530,9 @@ async function recordScheduledOutgoing(row, text, status, error = null) {
   }
 }
 
-function scheduledMessageShouldRetry(row) {
+function scheduledMessageShouldRetry(row, error) {
   return RETRYABLE_SCHEDULED_TYPES.has(String(row.type || ''))
+    && isTelegramRetryableError(error)
     && scheduledRetryAttempts(row) < MAX_TRANSACTIONAL_RETRY_ATTEMPTS;
 }
 
