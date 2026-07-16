@@ -14,6 +14,15 @@ export class TelegramApiError extends Error {
   }
 }
 
+export class TelegramTransportError extends Error {
+  constructor(method, error) {
+    super(`Telegram transport error: ${error?.message || 'request failed'}`);
+    this.name = 'TelegramTransportError';
+    this.method = method;
+    this.cause = error;
+  }
+}
+
 export class TelegramClient {
   constructor({ webhookChatId = null, preferWebhookReply = false } = {}) {
     this.webhookChatId = webhookChatId;
@@ -186,6 +195,28 @@ export class TelegramClient {
       throw new Error('TELEGRAM_BOT_TOKEN is empty');
     }
 
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.apiRequest(method, payload);
+      } catch (error) {
+        lastError = normalizeTelegramRequestError(method, error);
+        if (!shouldRetryTelegramRequestImmediately(lastError) || attempt === 2) {
+          throw lastError;
+        }
+        logger.warn('telegram request failed, retrying immediately', {
+          method,
+          attempt: attempt + 1,
+          message: lastError.message,
+        });
+        await wait((attempt + 1) * 500);
+      }
+    }
+
+    throw lastError;
+  }
+
+  async apiRequest(method, payload) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
@@ -194,7 +225,7 @@ export class TelegramClient {
         body: new URLSearchParams(serializeTelegramPayload(payload)),
         signal: controller.signal,
       });
-      const decoded = await response.json();
+      const decoded = await decodeTelegramResponse(method, response);
       if (!decoded.ok) {
         throw new TelegramApiError(method, response.status, decoded);
       }
@@ -297,8 +328,11 @@ export function isTelegramParseError(error) {
 }
 
 export function isTelegramRetryableError(error) {
-  if (!(error instanceof TelegramApiError)) {
+  if (error instanceof TelegramTransportError) {
     return true;
+  }
+  if (!(error instanceof TelegramApiError)) {
+    return false;
   }
 
   if (error.errorCode === 429 || error.responseStatus === 429) {
@@ -312,8 +346,11 @@ export function isTelegramRetryableError(error) {
 }
 
 export function telegramDeliveryErrorMessage(error) {
+  if (error instanceof TelegramTransportError) {
+    return `Не удалось связаться с Telegram: ${error.cause?.message || 'ошибка соединения'}.`;
+  }
   if (!(error instanceof TelegramApiError)) {
-    return 'Telegram временно недоступен. Сообщение можно повторить позже.';
+    return `Не удалось подготовить сообщение: ${error?.message || 'неизвестная ошибка'}.`;
   }
 
   const description = error.description.toLowerCase();
@@ -335,6 +372,37 @@ export function telegramDeliveryErrorMessage(error) {
 
 function isUploadFile(value) {
   return Boolean(value && typeof value === 'object' && value.buffer);
+}
+
+async function decodeTelegramResponse(method, response) {
+  const raw = await response.text();
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new TelegramTransportError(
+      method,
+      new Error(`Telegram вернул некорректный ответ HTTP ${response.status}`),
+    );
+  }
+}
+
+function normalizeTelegramRequestError(method, error) {
+  if (error instanceof TelegramApiError || error instanceof TelegramTransportError) {
+    return error;
+  }
+  return new TelegramTransportError(method, error);
+}
+
+function shouldRetryTelegramRequestImmediately(error) {
+  if (error instanceof TelegramTransportError) {
+    return true;
+  }
+  return error instanceof TelegramApiError
+    && error.errorCode >= 500;
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function serializeTelegramPayload(payload) {

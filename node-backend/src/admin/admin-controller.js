@@ -1778,11 +1778,11 @@ export class AdminController {
     }
 
     if (sendError && remindersError && isTelegramRetryableError(sendError)) {
-      this.flash('Офлайн-регистрация подтверждена, но сообщение не удалось отправить, а повторную отправку и напоминания не удалось запланировать. Нажмите «Повторить подтверждение».', 'error');
+      this.flash(`Офлайн-регистрация подтверждена, но сообщение не удалось отправить, а повторную отправку и напоминания не удалось запланировать. ${telegramDeliveryErrorMessage(sendError)} Нажмите «Повторить подтверждение».`, 'error');
     } else if (sendError && remindersError) {
       this.flash(`Офлайн-регистрация подтверждена, но сообщение не доставлено и напоминания не запланированы. ${telegramDeliveryErrorMessage(sendError)}`, 'error');
     } else if (sendError && isTelegramRetryableError(sendError)) {
-      this.flash('Офлайн-регистрация подтверждена, но Telegram не принял сообщение сразу. Мы поставили подтверждение в очередь повторной отправки.', 'error');
+      this.flash(`Офлайн-регистрация подтверждена, но сообщение не отправилось сразу. Мы поставили подтверждение в очередь. ${telegramDeliveryErrorMessage(sendError)}`, 'error');
     } else if (sendError) {
       this.flash(`Офлайн-регистрация подтверждена, но сообщение не доставлено. ${telegramDeliveryErrorMessage(sendError)}`, 'error');
     } else if (remindersError) {
@@ -1813,7 +1813,7 @@ export class AdminController {
       });
       this.flash(
         retryable
-          ? 'Telegram не принял повторное подтверждение сразу. Мы поставили его в очередь повторной отправки.'
+          ? `Сообщение не отправилось сразу, поэтому мы поставили его в очередь. ${telegramDeliveryErrorMessage(error)}`
           : telegramDeliveryErrorMessage(error),
         'error',
       );
