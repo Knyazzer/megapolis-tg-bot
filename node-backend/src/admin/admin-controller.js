@@ -40,7 +40,7 @@ export class AdminController {
   constructor({ session, response }) {
     this.session = session;
     this.response = response;
-    this.telegram = this.adminTelegramClient();
+    this.telegram = new TelegramClient();
     this.planner = new ReminderPlanner();
     this.chat = new ChatRepository();
     this.facecast = new FacecastClient();
@@ -3335,19 +3335,6 @@ export class AdminController {
       .replaceAll('&lt;/strong&gt;', '</strong>')
       .replaceAll('&lt;code&gt;', '<code>')
       .replaceAll('&lt;/code&gt;', '</code>');
-  }
-
-  adminTelegramClient() {
-    const simulator = this.session?.simulator;
-    if (!simulator?.telegramId || !Array.isArray(simulator.history)) {
-      return new TelegramClient();
-    }
-
-    return new SimulatorTelegramClient({
-      history: simulator.history,
-      captureChatId: simulator.telegramId,
-      fallback: new TelegramClient(),
-    });
   }
 
   ensureDevToolsEnabled() {
