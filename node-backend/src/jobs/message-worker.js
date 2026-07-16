@@ -1,4 +1,5 @@
 import { query, queryOne } from '../db/mysql.js';
+import { ChatRepository } from '../repositories/chat-repository.js';
 import { FacecastClient } from '../services/facecast-client.js';
 import { TelegramClient } from '../services/telegram-client.js';
 import { dateShort, formatSqlDate, nowSql, shiftDate, timeOnly, timeRange } from '../utils/dates.js';
@@ -6,6 +7,7 @@ import { h } from '../utils/html.js';
 import { logger } from '../utils/logger.js';
 
 const facecast = new FacecastClient();
+const chat = new ChatRepository();
 const RETRYABLE_SCHEDULED_TYPES = new Set(['offline_approved']);
 const MAX_TRANSACTIONAL_RETRY_ATTEMPTS = 6;
 const TRANSACTIONAL_RETRY_DELAY_MS = 5 * 60 * 1000;
@@ -130,6 +132,7 @@ async function processScheduledMessages(telegram, limit) {
   let failed = 0;
 
   for (const row of rows) {
+    let text = '';
     try {
       if (scheduledMessageIsStale(row)) {
         await markScheduledSent(row.id);
@@ -137,14 +140,17 @@ async function processScheduledMessages(telegram, limit) {
         continue;
       }
 
-      const [text, keyboard] = scheduledMessagePayload(row);
+      const [payloadText, keyboard] = scheduledMessagePayload(row);
+      text = payloadText;
       await telegram.sendMessage(Number(row.telegram_id), text, keyboard);
+      await recordScheduledOutgoing(row, text, 'sent');
       await markScheduledSent(row.id);
       sent += 1;
     } catch (error) {
       if (scheduledMessageShouldRetry(row)) {
         await rescheduleScheduledRetry(row, error);
       } else {
+        await recordScheduledOutgoing(row, text, 'failed', error);
         await markScheduledFailed(row.id, error);
       }
       failed += 1;
@@ -492,6 +498,36 @@ async function markScheduledFailed(id, error) {
     'UPDATE scheduled_messages SET failed_at = :now, error = :error, updated_at = :now WHERE id = :id',
     { id, error: error.message, now: nowSql() },
   );
+}
+
+async function recordScheduledOutgoing(row, text, status, error = null) {
+  if (String(row.type || '') !== 'offline_approved') {
+    return;
+  }
+
+  const personId = Number(row.person_id || 0);
+  const telegramId = Number(row.telegram_id || 0);
+  if (!personId || !telegramId || !String(text || '').trim()) {
+    return;
+  }
+
+  try {
+    await chat.recordOutgoing({
+      personId,
+      telegramId,
+      text,
+      messageType: 'bot',
+      status,
+      error: error?.message || null,
+    });
+  } catch (recordError) {
+    logger.warn('failed to record scheduled bot message', {
+      scheduledMessageId: row.id,
+      personId,
+      telegramId,
+      message: recordError.message,
+    });
+  }
 }
 
 function scheduledMessageShouldRetry(row) {
