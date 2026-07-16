@@ -450,7 +450,7 @@ function scheduledMessagePayload(row) {
 }
 
 function offlineArrivalTime(row) {
-  const value = String(row.guest_arrival_at || '').trim();
+  const value = row.guest_arrival_at;
   if (isValidDate(value)) {
     return timeOnly(value);
   }
