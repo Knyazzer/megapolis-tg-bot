@@ -17,7 +17,18 @@ import {
   TelegramClient,
   telegramDeliveryErrorMessage,
 } from '../services/telegram-client.js';
-import { dateShort, formatSqlDate, nowSql, parseDate, shiftDate, timeOnly, timeRange } from '../utils/dates.js';
+import {
+  dateShort,
+  dateShortSafe,
+  formatSqlDate,
+  isValidDate,
+  nowSql,
+  parseDate,
+  shiftDate,
+  timeOnly,
+  timeRange,
+  timeRangeSafe,
+} from '../utils/dates.js';
 import { h } from '../utils/html.js';
 import { logger } from '../utils/logger.js';
 import { attemptLogin, csrfField, destroySession, verifyCsrf } from './admin-auth.js';
@@ -316,7 +327,7 @@ export class AdminController {
     const event = id > 0 ? (await queryOne('SELECT * FROM events WHERE id = :id LIMIT 1', { id })) || blank : blank;
     const title = id > 0 ? String(event.title || 'Мероприятие') : 'Новое мероприятие';
     const subtitle = id > 0 && event.date_start
-      ? `${eventFormatLabel(event)} · ${dateShort(event.date_start)}, ${timeRange(event.date_start, event.date_end)}`
+      ? `${eventFormatLabel(event)} · ${dateShortSafe(event.date_start)}, ${timeRangeSafe(event.date_start, event.date_end)}`
       : 'Соберите событие, форматы участия и автоматические сообщения';
     let body = '<section class="panel event-editor">';
     body += '<form method="post" class="event-edit-form">';
@@ -2475,8 +2486,8 @@ export class AdminController {
     const text = '<b>Офлайн-участие подтверждено 🏢</b>\n\n'
       + 'Ждём вас на мероприятии:\n'
       + `<b>Название:</b> ${h(row.title)}\n`
-      + `<b>Дата:</b> ${h(dateShort(row.date_start))}\n`
-      + `<b>Время:</b> ${h(timeRange(row.date_start, row.date_end))}\n`
+      + `<b>Дата:</b> ${h(dateShortSafe(row.date_start))}\n`
+      + `<b>Время:</b> ${h(timeRangeSafe(row.date_start, row.date_end))}\n`
       + `<b>Сбор гостей:</b> ${h(this.offlineArrivalTime(row))}\n`
       + `<b>Наш адрес:</b> ${h(row.address || '')}\n`
       + '<b>Формат:</b> офлайн\n\n'
@@ -2549,7 +2560,13 @@ export class AdminController {
 
   offlineArrivalTime(row) {
     const value = String(row.guest_arrival_at || '').trim();
-    return timeOnly(value || shiftDate(row.date_start, -30 * 60 * 1000));
+    if (isValidDate(value)) {
+      return timeOnly(value);
+    }
+    if (isValidDate(row.date_start)) {
+      return timeOnly(shiftDate(row.date_start, -30 * 60 * 1000));
+    }
+    return 'уточняется';
   }
 
   async sendOfflineRejected(row) {
@@ -3160,7 +3177,7 @@ export class AdminController {
   }
 
   datetimeLocal(value) {
-    if (!value) return '';
+    if (!value || !isValidDate(value)) return '';
     return formatSqlDate(parseDate(value)).slice(0, 16).replace(' ', 'T');
   }
 
@@ -3171,7 +3188,11 @@ export class AdminController {
     if (!match) {
       throw new Error(`Некорректная дата ${label}`);
     }
-    return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6] || '00'}`;
+    const result = `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6] || '00'}`;
+    if (!isValidDate(result) || formatSqlDate(parseDate(result)) !== result) {
+      throw new Error(`Некорректная дата ${label}`);
+    }
+    return result;
   }
 
   dateTime(value) {

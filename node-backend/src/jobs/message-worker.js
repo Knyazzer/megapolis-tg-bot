@@ -2,7 +2,16 @@ import { query, queryOne } from '../db/mysql.js';
 import { ChatRepository } from '../repositories/chat-repository.js';
 import { FacecastClient } from '../services/facecast-client.js';
 import { isTelegramRetryableError, TelegramClient } from '../services/telegram-client.js';
-import { dateShort, formatSqlDate, nowSql, shiftDate, timeOnly, timeRange } from '../utils/dates.js';
+import {
+  dateShortSafe,
+  formatSqlDate,
+  isValidDate,
+  nowSql,
+  shiftDate,
+  timeOnly,
+  timeOnlySafe,
+  timeRangeSafe,
+} from '../utils/dates.js';
 import { h } from '../utils/html.js';
 import { logger } from '../utils/logger.js';
 
@@ -367,8 +376,8 @@ function scheduledMessageIsStale(row) {
 function scheduledMessagePayload(row) {
   const url = validPersonalFacecastUrl(row);
   const eventTitle = String(row.title || 'мероприятие');
-  const date = dateShort(row.date_start);
-  const range = timeRange(row.date_start, row.date_end);
+  const date = dateShortSafe(row.date_start);
+  const range = timeRangeSafe(row.date_start, row.date_end);
   const arrival = offlineArrivalTime(row);
   const registrationId = Number(row.registration_id);
 
@@ -442,7 +451,13 @@ function scheduledMessagePayload(row) {
 
 function offlineArrivalTime(row) {
   const value = String(row.guest_arrival_at || '').trim();
-  return timeOnly(value || shiftDate(row.date_start, -30 * 60 * 1000));
+  if (isValidDate(value)) {
+    return timeOnly(value);
+  }
+  if (isValidDate(row.date_start)) {
+    return timeOnly(shiftDate(row.date_start, -30 * 60 * 1000));
+  }
+  return timeOnlySafe(null);
 }
 
 function validPersonalFacecastUrl(row) {
