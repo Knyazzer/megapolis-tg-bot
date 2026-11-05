@@ -951,39 +951,21 @@
 
   var locationWidget = document.querySelector('[data-event-location-widget]');
 
-  var yandexMapsLoadPromise = null;
-
-  function yandexMapsReady() {
-    return new Promise(function (resolve) {
-      window.ymaps.ready(function () {
-        resolve(window.ymaps);
+  function loadVenueMap() {
+    var styles = document.createElement('link');
+    styles.rel = 'stylesheet';
+    styles.href = '/assets/leaflet/leaflet.css';
+    var script = document.createElement('script');
+    script.src = '/assets/leaflet/leaflet.js';
+    script.async = true;
+    return Promise.all([styles, script].map(function (element) {
+      return new Promise(function (resolve, reject) {
+        var timeout = window.setTimeout(function () { reject(new Error('map load timeout')); }, 12000);
+        element.onload = function () { window.clearTimeout(timeout); resolve(); };
+        element.onerror = function () { window.clearTimeout(timeout); reject(new Error('map load failed')); };
+        document.head.appendChild(element);
       });
-    });
-  }
-
-  function loadYandexMaps() {
-    if (window.ymaps && window.ymaps.ready) {
-      return yandexMapsReady();
-    }
-    if (yandexMapsLoadPromise) {
-      return yandexMapsLoadPromise;
-    }
-
-    yandexMapsLoadPromise = new Promise(function (resolve, reject) {
-      var script = document.createElement('script');
-      script.src = 'https://api-maps.yandex.ru/2.1/?lang=ru_RU';
-      script.async = true;
-      script.onload = function () {
-        if (window.ymaps && window.ymaps.ready) {
-          yandexMapsReady().then(resolve);
-        } else {
-          reject(new Error('yandex maps missing'));
-        }
-      };
-      script.onerror = reject;
-      document.head.appendChild(script);
-    });
-    return yandexMapsLoadPromise;
+    })).then(function () { return window.L; });
   }
 
   function initEventLocationWidget() {
@@ -1000,6 +982,12 @@
     if (!addressInput || !latInput || !lngInput || !mapNode) {
       return;
     }
+    var map = null;
+    var marker = null;
+    var requestVersion = 0;
+    var lookupController = null;
+    var lookupPending = false;
+    var mapFailed = false;
 
     function setStatus(text, isError) {
       if (!status) {
@@ -1010,7 +998,9 @@
     }
 
     function numberValue(input) {
-      var value = Number(String(input.value || '').replace(',', '.'));
+      var raw = String(input.value || '').trim();
+      if (!raw) return null;
+      var value = Number(raw.replace(',', '.'));
       return Number.isFinite(value) ? value : null;
     }
 
@@ -1023,144 +1013,130 @@
       lngInput.value = formatCoord(lng);
     }
 
-    loadYandexMaps().then(function (ymaps) {
+    function cancelLookup() {
+      requestVersion += 1;
+      if (lookupController) lookupController.abort();
+      lookupPending = false;
+      if (geocodeButton) geocodeButton.disabled = false;
+    }
+
+    function setPoint(lat, lng) {
+      updateInputs(lat, lng);
+      if (!map) return;
+      if (!marker) {
+        marker = window.L.marker([lat, lng], { draggable: true }).addTo(map);
+        marker.on('dragend', function () {
+          var coords = marker.getLatLng();
+          selectPoint(coords.lat, coords.lng);
+        });
+      } else {
+        marker.setLatLng([lat, lng]);
+      }
+      map.setView([lat, lng], Math.max(map.getZoom(), 16));
+    }
+
+    function lookup(params, reverse) {
+      cancelLookup();
+      var version = requestVersion;
+      var originalAddress = addressInput.value;
+      lookupController = new AbortController();
+      lookupPending = true;
+      if (geocodeButton) geocodeButton.disabled = true;
+      setStatus(reverse ? 'Уточняю адрес по точке...' : 'Ищу площадку...');
+      params.set('action', 'venue_geocode');
+      fetch('/?' + params.toString(), {
+        signal: lookupController.signal,
+        headers: { Accept: 'application/json' },
+      }).then(function (response) {
+        return response.json().then(function (data) {
+          if (!response.ok || !data.ok) throw new Error(data.error || 'Поиск адреса временно недоступен.');
+          return data.place;
+        });
+      }).then(function (place) {
+        if (version !== requestVersion || addressInput.value !== originalAddress) return;
+        if (!place) {
+          setStatus(reverse ? 'Точка выбрана. Введите адрес вручную.' : 'Адрес не найден. Уточните город, улицу и дом.', true);
+          return;
+        }
+        if (reverse && place.address) addressInput.value = place.address;
+        if (!reverse) setPoint(place.lat, place.lng);
+        setStatus((mapFailed ? 'Карта временно недоступна. ' : '')
+          + 'На карте: ' + place.address + '. Проверьте точку и сохраните мероприятие.');
+      }).catch(function (error) {
+        if (version !== requestVersion || error.name === 'AbortError') return;
+        setStatus(reverse ? 'Точка выбрана. Адрес можно указать вручную.' : error.message, true);
+      }).finally(function () {
+        if (version === requestVersion) {
+          lookupPending = false;
+          if (geocodeButton) geocodeButton.disabled = false;
+        }
+      });
+    }
+
+    function selectPoint(lat, lng) {
+      setPoint(lat, lng);
+      addressInput.value = '';
+      lookup(new URLSearchParams({ lat: String(lat), lng: String(lng) }), true);
+    }
+
+    function geocodeAddress() {
+      var query = String(addressInput.value || '').trim();
+      if (query.length < 3) {
+        setStatus('Укажите город, улицу и дом.', true);
+        addressInput.focus();
+        return;
+      }
+      lookup(new URLSearchParams({ q: query }), false);
+    }
+
+    if (geocodeButton) geocodeButton.addEventListener('click', geocodeAddress);
+    addressInput.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        geocodeAddress();
+      }
+    });
+    addressInput.addEventListener('input', function () {
+      cancelLookup();
+      latInput.value = '';
+      lngInput.value = '';
+      if (marker && map) { map.removeLayer(marker); marker = null; }
+      setStatus('Адрес изменён. Можно найти его на карте или сохранить вручную.');
+    });
+    if (addressInput.form) {
+      addressInput.form.addEventListener('submit', function (event) {
+        if (lookupPending) {
+          event.preventDefault();
+          setStatus('Дождитесь результата поиска или уточните адрес вручную.', true);
+        }
+      });
+    }
+
+    loadVenueMap().then(function (L) {
       var initialLat = numberValue(latInput);
       var initialLng = numberValue(lngInput);
-      var hasInitialPoint = initialLat !== null && initialLng !== null;
+      var hasInitialPoint = initialLat !== null && initialLng !== null
+        && Math.abs(initialLat) <= 90 && Math.abs(initialLng) <= 180;
       var center = hasInitialPoint ? [initialLat, initialLng] : [55.7558, 37.6173];
-      var map = new ymaps.Map(mapNode, {
-        center: center,
-        controls: ['zoomControl'],
-        zoom: hasInitialPoint ? 16 : 11,
-      }, {
-        suppressMapOpenBlock: true,
-      });
-      var marker = null;
-
-      map.behaviors.enable('scrollZoom');
-
-      function coordsFromLatLng(lat, lng) {
-        return [Number(lat), Number(lng)];
-      }
-
-      function setPoint(coords, message) {
-        var lat = Number(coords[0]);
-        var lng = Number(coords[1]);
-        updateInputs(lat, lng);
-        if (!marker) {
-          marker = new ymaps.Placemark([lat, lng], {}, {
-            draggable: true,
-            preset: 'islands#blueDotIcon',
-          });
-          map.geoObjects.add(marker);
-          marker.events.add('dragend', function () {
-            var markerCoords = marker.geometry.getCoordinates();
-            setPoint(markerCoords, 'Точка обновлена по маркеру.');
-            reverseGeocode(markerCoords);
-          });
-        } else {
-          marker.geometry.setCoordinates([lat, lng]);
-        }
-        map.setCenter([lat, lng], Math.max(map.getZoom(), 16), { duration: 200 });
-        setStatus(message || 'Точка на карте обновлена.');
-      }
-
-      function firstGeoObject(result) {
-        return result && result.geoObjects ? result.geoObjects.get(0) : null;
-      }
-
-      function geoObjectAddress(geoObject) {
-        if (!geoObject) {
-          return '';
-        }
-        if (typeof geoObject.getAddressLine === 'function') {
-          return geoObject.getAddressLine();
-        }
-        return String(geoObject.get('text') || '');
-      }
-
-      function reverseGeocode(coords) {
-        ymaps.geocode(coords, { results: 1 }).then(function (result) {
-          var item = firstGeoObject(result);
-          var address = geoObjectAddress(item);
-          if (address) {
-            addressInput.value = address;
-            setStatus('Адрес обновлён по точке на карте.');
-          }
-        }).catch(function () {
-          setStatus('Точка сохранена. Адрес можно уточнить вручную.', true);
-        });
-      }
-
+      map = L.map(mapNode, { scrollWheelZoom: false }).setView(center, hasInitialPoint ? 16 : 11);
+      L.tileLayer(locationWidget.dataset.mapTileUrl, {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      }).addTo(map);
       if (hasInitialPoint) {
-        setPoint(coordsFromLatLng(initialLat, initialLng), 'Точка площадки уже задана.');
+        setPoint(initialLat, initialLng);
+      } else {
+        latInput.value = '';
+        lngInput.value = '';
       }
-
-      map.events.add('click', function (event) {
-        var coords = event.get('coords');
-        setPoint(coords, 'Точка поставлена на карте. Уточняю адрес...');
-        reverseGeocode(coords);
+      map.on('click', function (event) {
+        selectPoint(event.latlng.lat, event.latlng.lng);
       });
-
-      var lastGeocodedQuery = '';
-
-      function geocodeAddress() {
-        var query = String(addressInput.value || '').trim();
-        if (!query) {
-          setStatus('Введите адрес, чтобы найти его на карте.', true);
-          addressInput.focus();
-          return;
-        }
-        if (query === lastGeocodedQuery) {
-          return;
-        }
-
-        if (geocodeButton) {
-          geocodeButton.disabled = true;
-        }
-        setStatus('Ищу адрес на Яндекс.Картах...');
-
-        ymaps.geocode(query, { results: 1 }).then(function (result) {
-          var item = firstGeoObject(result);
-          if (!item) {
-            setStatus('Адрес не найден. Попробуйте уточнить город, улицу и дом.', true);
-            return;
-          }
-          lastGeocodedQuery = query;
-          var coords = item.geometry.getCoordinates();
-          var address = geoObjectAddress(item);
-          if (address) {
-            addressInput.value = address;
-          }
-          setPoint(coords, 'Адрес найден на карте.');
-        }).catch(function () {
-          setStatus('Не удалось найти адрес. Можно поставить точку кликом на карте.', true);
-        }).finally(function () {
-          if (geocodeButton) {
-            geocodeButton.disabled = false;
-          }
-        });
-      }
-
-      if (geocodeButton) {
-        geocodeButton.addEventListener('click', geocodeAddress);
-      }
-      addressInput.addEventListener('keydown', function (event) {
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          geocodeAddress();
-        }
-      });
-      addressInput.addEventListener('blur', function () {
-        if (String(addressInput.value || '').trim()) {
-          geocodeAddress();
-        }
-      });
-      window.setTimeout(function () {
-        map.container.fitToViewport();
-      }, 120);
+      mapNode.hidden = false;
     }).catch(function () {
-      setStatus('Яндекс.Карта не загрузилась. Адрес можно сохранить без карты.', true);
+      mapFailed = true;
+      mapNode.hidden = true;
+      setStatus('Карта не загрузилась. Адрес можно найти по кнопке или сохранить вручную.', true);
     });
   }
 

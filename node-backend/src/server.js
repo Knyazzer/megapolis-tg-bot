@@ -15,6 +15,15 @@ import { logger } from './utils/logger.js';
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const publicDir = normalize(join(currentDir, '../public'));
+const leafletAssets = new Map([
+  ['leaflet.js', 'leaflet.js'],
+  ['leaflet.css', 'leaflet.css'],
+  ['images/marker-icon.png', 'images/marker-icon.png'],
+  ['images/marker-icon-2x.png', 'images/marker-icon-2x.png'],
+  ['images/marker-shadow.png', 'images/marker-shadow.png'],
+  ['images/layers.png', 'images/layers.png'],
+  ['images/layers-2x.png', 'images/layers-2x.png'],
+]);
 const FORM_BODY_LIMIT = 60 * 1024 * 1024;
 
 const server = createServer(async (request, response) => {
@@ -87,8 +96,13 @@ server.listen(config.port, config.host, () => {
 
 async function handleStatic(response, pathname) {
   const safePath = normalize(decodeURIComponent(pathname)).replace(/^(\.\.(\/|\\|$))+/, '');
-  const path = normalize(join(publicDir, safePath));
-  if (!path.startsWith(publicDir)) {
+  const leafletAsset = pathname.startsWith('/assets/leaflet/')
+    ? leafletAssets.get(pathname.slice('/assets/leaflet/'.length))
+    : null;
+  const path = leafletAsset
+    ? join(currentDir, '../node_modules/leaflet/dist', leafletAsset)
+    : normalize(join(publicDir, safePath));
+  if (!leafletAsset && !path.startsWith(publicDir)) {
     text(response, 403, 'Forbidden');
     return;
   }

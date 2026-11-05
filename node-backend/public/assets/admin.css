@@ -1226,6 +1226,7 @@ body.admin-page:not(.admin-page-flow) .main-content > .event-editor {
 
 .event-location-map {
   min-height: 300px;
+  isolation: isolate;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;

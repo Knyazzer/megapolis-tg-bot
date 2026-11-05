@@ -12,6 +12,7 @@ import { ChatRepository } from '../repositories/chat-repository.js';
 import { FacecastClient } from '../services/facecast-client.js';
 import { GiveawaysRepository } from '../repositories/giveaways-repository.js';
 import { ReminderPlanner } from '../services/reminder-planner.js';
+import { geocodeVenue } from '../services/venue-geocoder.js';
 import {
   isTelegramRetryableError,
   TelegramClient,
@@ -102,6 +103,15 @@ export class AdminController {
 
     if (action === 'giveaway_entries_export') {
       return this.giveawayEntriesExport(url);
+    }
+
+    if (action === 'venue_geocode') {
+      try {
+        const place = await geocodeVenue(url.searchParams);
+        return json({ ok: true, place });
+      } catch (error) {
+        return json({ ok: false, error: error.message }, error.status || 502);
+      }
     }
 
     const page = String(url.searchParams.get('page') || 'registrations');
@@ -346,7 +356,7 @@ export class AdminController {
     body += '<div class="event-editor-layout"><div class="event-editor-main">';
     body += this.eventEditorSection('Основное', 'Название и текст, который увидит участник в Telegram.', `${this.input('Название', 'title', event.title, true)}${this.textarea('Описание для бота', 'description', event.description)}`);
     body += this.eventEditorSection('Время и формат', 'Настройка старта, прихода гостей и длительности события.', `${this.eventTimeWidget(event)}<div class="form-row two">${this.input('Старт онлайна', 'online_start', this.datetimeLocal(event.online_start), false, 'datetime-local')}${this.input('Лимит офлайн-мест', 'offline_capacity', event.offline_capacity, false, 'number')}</div>`);
-    body += this.eventEditorSection('Площадка', 'Адрес можно найти через Яндекс.Карты или поставить точку кликом.', this.eventLocationWidget(event));
+    body += this.eventEditorSection('Площадка', 'Адрес площадки и точка на карте.', this.eventLocationWidget(event));
     body += '</div><aside class="event-editor-side">';
     body += this.eventEditorSection('Facecast', 'Данные онлайн-трансляции и записи эфира.', `${this.input('Facecast event id', 'facecast_event_id', event.facecast_event_id)}${this.input('Ссылка Facecast', 'facecast_url', event.facecast_url, false, 'url')}${this.input('Запись эфира', 'recording_url', event.recording_url, false, 'url')}`);
     body += this.eventEditorSection('Постпромо', 'Сообщение после события. Если не заполнено, бот ничего не отправит.', this.eventPostpromoWidget(event));
@@ -2994,7 +3004,7 @@ export class AdminController {
   }
 
   eventLocationWidget(event) {
-    return `<div class="event-location-widget" data-event-location-widget>
+    return `<div class="event-location-widget" data-event-location-widget data-map-tile-url="${h(config.maps.tileUrl)}">
       <div class="event-location-address">
         <label>Адрес<input type="text" name="address" value="${h(event.address ?? '')}" data-location-address></label>
         <button class="button" type="button" data-location-geocode>Найти на карте</button>
@@ -3002,7 +3012,7 @@ export class AdminController {
       <input type="hidden" name="venue_lat" value="${h(event.venue_lat ?? '')}">
       <input type="hidden" name="venue_lng" value="${h(event.venue_lng ?? '')}">
       <div class="event-location-map" data-location-map></div>
-      <p class="event-location-status muted" data-location-status>Введите адрес или поставьте точку кликом на карте.</p>
+      <p class="event-location-status muted" data-location-status role="status" aria-live="polite">Введите адрес или поставьте точку кликом на карте.</p>
     </div>`;
   }
 

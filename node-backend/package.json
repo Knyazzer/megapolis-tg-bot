@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
+    "leaflet": "1.9.4",
     "mysql2": "^3.11.5"
   }
 }
