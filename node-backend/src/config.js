@@ -34,6 +34,10 @@ export const config = {
     login: String(env('ADMIN_LOGIN', 'admin')),
     passwordHash: String(env('ADMIN_PASSWORD_HASH', '')),
   },
+  maps: {
+    geocoderUrl: String(env('MAP_GEOCODER_URL', 'https://nominatim.openstreetmap.org')).replace(/\/+$/, ''),
+    tileUrl: String(env('MAP_TILE_URL', 'https://tile.openstreetmap.org/{z}/{x}/{y}.png')),
+  },
   facecast: {
     apiBase: String(env('FACECAST_API_BASE', 'https://facecast.net/api/v1')).replace(/\/+$/, ''),
     uid: String(env('FACECAST_UID', '')),
