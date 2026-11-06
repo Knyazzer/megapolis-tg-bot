@@ -769,6 +769,7 @@ export class AdminController {
         p.position_title LIKE :search OR
         p.phone LIKE :search OR
         p.email LIKE :search OR
+        p.promo_code LIKE :search OR
         p.telegram_id LIKE :search
       )`);
     }
@@ -798,7 +799,7 @@ export class AdminController {
     const activeFilters = Boolean(filters.q || filters.consent !== 'all' || filters.activity !== 'all');
     let body = '<div class="people-filterbar">';
     body += `<form class="people-filter-form" method="get" data-autosubmit-select><input type="hidden" name="page" value="people"><input type="hidden" name="sort" value="${h(filters.sort)}"><input type="hidden" name="dir" value="${h(filters.dir)}">`;
-    body += `<label class="people-search"><span>Поиск</span><input name="q" value="${h(filters.q)}" placeholder="Имя, компания, телефон, email"></label>`;
+    body += `<label class="people-search"><span>Поиск</span><input name="q" value="${h(filters.q)}" placeholder="Имя, компания, телефон, email, промокод"></label>`;
     body += `<label><span>Согласие</span><select name="consent">${this.options({ all: 'Все', yes: 'Есть', no: 'Нет' }, filters.consent)}</select></label>`;
     body += `<label><span>Активность</span><select name="activity">${this.options({
       all: 'Любая',
@@ -843,7 +844,9 @@ export class AdminController {
     const username = person.username ? `@${person.username}` : `ID ${person.telegram_id}`;
     const lastActivity = person.last_action_at || person.last_seen_at || person.created_at;
     let body = `<tr><td><div class="person-main"><strong>${h(name)}</strong><span>${h(username)}</span></div>`;
-    body += `<div class="person-contact">${person.phone ? `<span>${h(person.phone)}</span>` : ''}${person.email ? `<span>${h(person.email)}</span>` : ''}</div></td>`;
+    body += `<div class="person-contact">${person.phone ? `<span>${h(person.phone)}</span>` : ''}${person.email ? `<span>${h(person.email)}</span>` : ''}</div>`;
+    if (person.promo_code) body += `<span class="cell-sub">Промокод: ${h(person.promo_code)}</span>`;
+    body += '</td>';
     body += `<td><span class="cell-main">${h(person.company || '—')}</span>${person.position_title ? `<span class="cell-sub">${h(person.position_title)}</span>` : ''}</td>`;
     body += `<td>${this.peopleRegistrationSummary(person)}</td>`;
     body += `<td><span class="cell-main">${h(this.dateTime(lastActivity))}</span><span class="cell-sub">${person.last_action_at ? 'по регистрации' : 'в боте'}</span></td>`;
@@ -2129,7 +2132,7 @@ export class AdminController {
 
   async processMessageQueue() {
     const result = await processDueMessages({ limit: 100 });
-    this.flash(`Очередь обработана: рассылки ${result.broadcasts.sent} отправлено, ${result.broadcasts.failed} ошибок, ${result.broadcasts.picked} взято в работу`);
+    this.flash(`Очередь обработана: рассылки ${result.broadcasts.sent} отправлено, ${result.broadcasts.retried} отложено для повтора, ${result.broadcasts.failed} ошибок, ${result.broadcasts.picked} взято в работу`);
   }
 
   async processBroadcastCampaign(form) {
@@ -2139,7 +2142,7 @@ export class AdminController {
     const queued = Number(campaign.queued_messages || 0);
     if (queued <= 0) throw new Error('В этой рассылке нет сообщений в очереди');
     const result = await processDueMessages({ limit: Math.min(500, Math.max(queued, 60)), broadcastCampaignId: campaign.id });
-    this.flash(`Рассылка обработана: ${result.broadcasts.sent} отправлено, ${result.broadcasts.failed} ошибок, ${result.broadcasts.picked} взято в работу`);
+    this.flash(`Рассылка обработана: ${result.broadcasts.sent} отправлено, ${result.broadcasts.retried} отложено для повтора, ${result.broadcasts.failed} ошибок, ${result.broadcasts.picked} взято в работу`);
   }
 
   async retryBroadcastCampaign(form) {
@@ -2151,7 +2154,9 @@ export class AdminController {
     const now = nowSql();
     await withTransaction(async (tx) => {
       await tx.execute(
-        "UPDATE broadcast_messages SET status = 'queued', error = NULL, updated_at = :now WHERE campaign_id = :campaignId AND status = 'failed'",
+        `UPDATE broadcast_messages SET status = 'queued', error = NULL,
+         attempt_count = 0, next_attempt_at = NULL, lock_token = NULL, locked_until = NULL,
+         updated_at = :now WHERE campaign_id = :campaignId AND status = 'failed'`,
         { campaignId: campaign.id, now },
       );
       await tx.execute(
@@ -2170,7 +2175,9 @@ export class AdminController {
     const now = nowSql();
     await withTransaction(async (tx) => {
       await tx.execute(
-        "UPDATE broadcast_messages SET status = 'cancelled', error = :error, updated_at = :now WHERE campaign_id = :campaignId AND status = 'queued'",
+        `UPDATE broadcast_messages SET status = 'cancelled', error = :error,
+         lock_token = NULL, locked_until = NULL,
+         updated_at = :now WHERE campaign_id = :campaignId AND status = 'queued'`,
         { campaignId: campaign.id, error: 'Отменено модератором', now },
       );
       await tx.execute(
@@ -2265,7 +2272,7 @@ export class AdminController {
 
   async registrationWithDetails(id) {
     return queryOne(
-      `SELECT r.*, p.telegram_id, p.full_name, p.company, p.position_title, p.phone, p.email,
+      `SELECT r.*, p.telegram_id, p.full_name, p.company, p.position_title, p.phone, p.email, p.promo_code,
         e.id AS event_id, e.title, e.slug, e.description, e.date_start, e.date_end, e.online_start,
         e.guest_arrival_at, e.address, e.venue_lat, e.venue_lng, e.facecast_event_id, e.facecast_url, e.recording_url,
         e.photo_album_url, e.postpromo_message, e.postpromo_send_at,
@@ -2329,6 +2336,7 @@ export class AdminController {
     const details = [
       this.detailItem('Телефон', registration.phone),
       this.detailItem('Email', registration.email),
+      this.detailItem('Промокод', registration.promo_code),
       this.detailItem('Компания', registration.company),
       this.detailItem('Должность', registration.position_title),
       this.detailItem('Telegram ID', registration.telegram_id),
@@ -3369,6 +3377,7 @@ export class AdminController {
       ask_position: 'ждём должность',
       ask_phone: 'ждём телефон',
       ask_email: 'ждём email',
+      ask_promo_code: 'ждём промокод',
       registered: 'анкета заполнена',
     };
     return labels[state] || state || 'новый';
@@ -3484,7 +3493,7 @@ export class AdminController {
     return {
       start: this.flowNodeData('1', 'Первое касание', 'Бот', 96, 154, [['/start', 'Мегаполис Медиа на связи 👋\n\nЗдесь можно зарегистрироваться на митапы, эфиры и деловые встречи.\n\nСначала коротко познакомимся: это нужно для регистрации, допуска к эфиру и связи с вами. Анкета без марафона, обещаем 🙂']], ['Зарегистрироваться', 'Получить идею', 'Главное меню']),
       consent: this.flowNodeData('2', 'Согласие', 'Данные', 560, 154, [['Перед анкетой', `Согласие на обработку персональных данных\n\nМы будем использовать ФИО, компанию, должность, телефон и email для регистрации на мероприятия, коммуникации, допуска к эфиру и отправки материалов.\n\nПолный текст: ${config.links.privacy}`]], ['Даю согласие', 'Главное меню']),
-      profile: this.flowNodeData('3', 'Анкета', 'Данные', 1024, 154, [['Имя', 'Спасибо! Давайте познакомимся 🙂 Напишите, пожалуйста, имя и фамилию.'], ['Компания', 'Шаг 2 из 5\n\nИз какой вы компании?'], ['Должность', 'Шаг 3 из 5\n\nА какая у вас должность?'], ['Телефон', 'Шаг 4 из 5\n\nПоделитесь, пожалуйста, номером телефона. Можно отправить его кнопкой ниже.'], ['Email', 'Шаг 5 из 5\n\nИ последний шаг: напишите вашу почту.'], ['Финал анкеты', 'Готово, спасибо! ✨\n\nАнкета собрана. Теперь можно выбрать мероприятие.']], ['Ответ текстом', 'Отправить телефон']),
+      profile: this.flowNodeData('3', 'Анкета', 'Данные', 1024, 154, [['Имя', 'Спасибо! Давайте познакомимся 🙂 Напишите, пожалуйста, имя и фамилию.'], ['Компания', 'Шаг 2 из 6\n\nИз какой вы компании?'], ['Должность', 'Шаг 3 из 6\n\nА какая у вас должность?'], ['Телефон', 'Шаг 4 из 6\n\nПоделитесь, пожалуйста, номером телефона. Можно отправить его кнопкой ниже.'], ['Email', 'Шаг 5 из 6\n\nНапишите вашу почту.'], ['Промокод', 'Шаг 6 из 6\n\nЕсли у вас есть промокод, напишите его. Если нет — нажмите «Пропустить».'], ['Финал анкеты', 'Готово, спасибо! ✨\n\nАнкета собрана. Теперь можно выбрать мероприятие.']], ['Ответ текстом', 'Отправить телефон', 'Пропустить промокод']),
       events: this.flowNodeData('4', 'Выбор мероприятия', 'Регистрация', 1488, 154, [['Список событий', 'Ближайшие мероприятия\n\nВыберите событие, на которое хотите зарегистрироваться.\n\nАдрес на этом шаге не показываем: человек сначала выбирает событие.'], ['Если событий нет', 'Пока ближайших мероприятий нет.\n\nКак только появится новое событие, мы обязательно расскажем 🙂']], ['Выбрать событие', 'Главное меню']),
       format_choice: this.flowNodeData('5', 'Выбор формата', 'Регистрация', 1952, 154, [['После выбора события', 'Отлично, вот что запланировано\n\nНазвание: {название}\nДата: {дата}\nВремя: {время}\nФормат: {офлайн + онлайн / только офлайн / только онлайн}\n\n{описание мероприятия}\n\nВыберите удобный формат участия:']], ['Прийти офлайн', 'Смотреть онлайн', 'Главное меню']),
       offline_pending: this.flowNodeData('6A', 'Офлайн на проверке', 'Модерация', 2416, 154, [['После выбора офлайна', 'Заявка на офлайн-участие принята 🏢\n\nОрганизаторы проверят список гостей и пришлют подтверждение.\n\nАдрес и детали площадки отправим после подтверждения участия, чтобы у вас не было лишних квестов с навигацией раньше времени.']], ['Модератор: подтвердить', 'Модератор: отказ']),
@@ -3730,6 +3739,7 @@ export class AdminController {
       ask_position: 'profile',
       ask_phone: 'profile',
       ask_email: 'profile',
+      ask_promo_code: 'profile',
       registered: 'events',
     }[row.state] || 'start';
   }

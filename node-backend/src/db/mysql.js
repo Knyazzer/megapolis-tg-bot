@@ -72,6 +72,16 @@ export async function pingDb() {
   return rows[0]?.ok === 1;
 }
 
+// Cleanup must not create a new connection after a failed initialisation.
+export async function closeDb() {
+  const mysqlPool = pool;
+  const sqliteDatabase = sqlite;
+  pool = undefined;
+  sqlite = undefined;
+  if (mysqlPool) await mysqlPool.end();
+  if (sqliteDatabase) sqliteDatabase.close();
+}
+
 export async function withTransaction(callback) {
   if (isSqlite()) {
     const database = sqliteDb();
@@ -164,6 +174,11 @@ function ensureSqliteSchema(database) {
   database.exec(`
     PRAGMA foreign_keys = ON;
 
+    CREATE TABLE IF NOT EXISTS message_queue_control (
+      id INTEGER NOT NULL PRIMARY KEY,
+      paused_until TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS people (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       telegram_id INTEGER NOT NULL UNIQUE,
@@ -175,6 +190,7 @@ function ensureSqliteSchema(database) {
       position_title TEXT NULL,
       phone TEXT NULL,
       email TEXT NULL,
+      promo_code TEXT NULL,
       consent_accepted_at TEXT NULL,
       state TEXT NOT NULL DEFAULT 'new',
       state_payload TEXT NULL,
@@ -373,6 +389,7 @@ function ensureSqliteSchema(database) {
   ensureSqliteColumn(database, 'registrations', 'facecast_total_watch_minutes', 'INTEGER NULL');
   ensureSqliteColumn(database, 'registrations', 'facecast_stats_synced_at', 'TEXT NULL');
   ensureSqliteColumn(database, 'people', 'chat_mode', "TEXT NOT NULL DEFAULT 'bot'");
+  ensureSqliteColumn(database, 'people', 'promo_code', 'TEXT NULL');
   ensureSqliteColumn(database, 'people', 'chat_mode_updated_at', 'TEXT NULL');
   ensureSqliteColumn(database, 'people', 'chat_read_at', 'TEXT NULL');
   ensureSqliteColumn(database, 'events', 'guest_arrival_at', 'TEXT NULL');
@@ -391,6 +408,13 @@ function ensureSqliteSchema(database) {
   ensureSqliteColumn(database, 'chat_messages', 'media_name', 'TEXT NULL');
   ensureSqliteColumn(database, 'chat_messages', 'media_mime', 'TEXT NULL');
   ensureSqliteColumn(database, 'giveaways', 'archived_at', 'TEXT NULL');
+  for (const table of ['scheduled_messages', 'broadcast_messages']) {
+    ensureSqliteColumn(database, table, 'attempt_count', 'INTEGER NOT NULL DEFAULT 0');
+    ensureSqliteColumn(database, table, 'next_attempt_at', 'TEXT NULL');
+    ensureSqliteColumn(database, table, 'lock_token', 'TEXT NULL');
+    ensureSqliteColumn(database, table, 'locked_until', 'TEXT NULL');
+    ensureSqliteColumn(database, table, 'delivery_step', 'INTEGER NOT NULL DEFAULT 0');
+  }
   database.exec('CREATE INDEX IF NOT EXISTS idx_registrations_archived ON registrations (archived_at)');
   database.exec('CREATE INDEX IF NOT EXISTS idx_giveaways_archived ON giveaways (archived_at, is_active)');
   ensureSqliteDefaultGiveaway(database);

@@ -24,10 +24,11 @@ export class TelegramTransportError extends Error {
 }
 
 export class TelegramClient {
-  constructor({ webhookChatId = null, preferWebhookReply = false } = {}) {
+  constructor({ webhookChatId = null, preferWebhookReply = false, maxAttempts = 3 } = {}) {
     this.webhookChatId = webhookChatId;
     this.preferWebhookReply = preferWebhookReply;
     this.webhookReply = null;
+    this.maxAttempts = Number.isInteger(maxAttempts) && maxAttempts > 0 ? maxAttempts : 3;
   }
 
   consumeWebhookReply() {
@@ -37,7 +38,7 @@ export class TelegramClient {
   }
 
   async sendMessage(chatId, text, replyMarkup = {}, extra = {}) {
-    const chunks = splitText(text);
+    const chunks = splitTelegramText(text);
     let result = null;
 
     for (const [index, chunk] of chunks.entries()) {
@@ -196,12 +197,12 @@ export class TelegramClient {
     }
 
     let lastError = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < this.maxAttempts; attempt += 1) {
       try {
         return await this.apiRequest(method, payload);
       } catch (error) {
         lastError = normalizeTelegramRequestError(method, error);
-        if (!shouldRetryTelegramRequestImmediately(lastError) || attempt === 2) {
+        if (!shouldRetryTelegramRequestImmediately(lastError) || attempt === this.maxAttempts - 1) {
           throw lastError;
         }
         logger.warn('telegram request failed, retrying immediately', {
@@ -271,11 +272,13 @@ export class TelegramClient {
         body: formData,
         signal: controller.signal,
       });
-      const decoded = await response.json();
+      const decoded = await decodeTelegramResponse(method, response);
       if (!decoded.ok) {
         throw new TelegramApiError(method, response.status, decoded);
       }
       return decoded;
+    } catch (error) {
+      throw normalizeTelegramRequestError(method, error);
     } finally {
       clearTimeout(timeout);
     }
@@ -343,6 +346,19 @@ export function isTelegramRetryableError(error) {
   }
 
   return false;
+}
+
+// attempts is the number of failed deliveries, starting at 1.
+export function telegramRetryDelayMs(error, attempts = 1) {
+  const attemptNumber = Number.isFinite(Number(attempts)) ? Math.max(1, Number(attempts)) : 1;
+  const backoff = Math.min(15 * 60 * 1000, 30 * 1000 * (2 ** (attemptNumber - 1)));
+  const retryAfter = error?.parameters?.retry_after;
+  const seconds = typeof retryAfter === 'number' ? retryAfter : NaN;
+  const rateLimited = error instanceof TelegramApiError
+    && (error.errorCode === 429 || error.responseStatus === 429);
+  return rateLimited && Number.isFinite(seconds) && seconds > 0
+    ? Math.max(backoff, Math.ceil(seconds * 1000))
+    : backoff;
 }
 
 export function telegramDeliveryErrorMessage(error) {
@@ -416,23 +432,23 @@ function serializeTelegramPayload(payload) {
   return result;
 }
 
-function splitText(text) {
-  if (text.length <= 3900) {
-    return [text];
-  }
-
+export function splitTelegramText(text) {
+  let remaining = String(text ?? '');
   const chunks = [];
-  let current = '';
-  for (const line of text.split(/\r?\n/)) {
-    if (`${current}\n${line}`.length > 3900) {
-      chunks.push(current);
-      current = line;
-    } else {
-      current += `${current ? '\n' : ''}${line}`;
+  while (remaining.length > 3900) {
+    const newline = remaining.lastIndexOf('\n', 3900);
+    let end = newline > 0 ? newline : 3900;
+    // Keep UTF-16 surrogate pairs together when cutting a long line.
+    const last = remaining.charCodeAt(end - 1);
+    const next = remaining.charCodeAt(end);
+    if (last >= 0xD800 && last <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF) {
+      end -= 1;
     }
+    chunks.push(remaining.slice(0, end));
+    remaining = remaining.slice(end);
   }
-  if (current) {
-    chunks.push(current);
+  if (remaining || chunks.length === 0) {
+    chunks.push(remaining);
   }
   return chunks;
 }

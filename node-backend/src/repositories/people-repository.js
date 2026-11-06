@@ -1,7 +1,7 @@
 import { query, queryOne } from '../db/mysql.js';
 import { nowSql } from '../utils/dates.js';
 
-const PERSON_FIELDS = ['full_name', 'company', 'position_title', 'phone', 'email'];
+const PERSON_FIELDS = ['full_name', 'company', 'position_title', 'phone', 'email', 'promo_code'];
 
 export class PeopleRepository {
   async findByTelegramId(telegramId) {
@@ -90,6 +90,12 @@ export class PeopleRepository {
 }
 
 export function profileComplete(person) {
+  // Email is already saved when the optional promo-code question is shown.
+  // Keep that step reachable, including when a creative request temporarily
+  // suspends registration; existing profiles need no promo code to stay ready.
+  if (['ask_promo_code', 'awaiting_creative_brief:ask_promo_code'].includes(String(person?.state || ''))) {
+    return false;
+  }
   return Boolean(
     person?.consent_accepted_at &&
       person?.full_name &&

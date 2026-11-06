@@ -1,42 +1,37 @@
 import { processDueMessages } from './jobs/message-worker.js';
-import { db } from './db/mysql.js';
+import { closeDb } from './db/mysql.js';
+import { checkDatabaseReadiness } from './db/readiness.js';
+import { runWorkerLoop } from './jobs/worker-loop.js';
 import { logger } from './utils/logger.js';
 
 const loop = process.argv.includes('--loop');
 const intervalMs = Number(process.env.WORKER_INTERVAL_MS || 60_000);
 
 async function runOnce() {
+  const readiness = await checkDatabaseReadiness();
+  if (!readiness.ok) {
+    logger.warn('worker waiting for database schema', readiness);
+    return false;
+  }
   const result = await processDueMessages();
   logger.info('worker pass complete', result);
-}
-
-async function runLoop() {
-  await runOnce();
-  setInterval(() => {
-    runOnce().catch((error) => {
-      logger.error('worker pass failed', { message: error.message, stack: error.stack });
-    });
-  }, intervalMs);
+  return true;
 }
 
 try {
   if (loop) {
-    await runLoop();
+    await runWorkerLoop({ runOnce, intervalMs, logger });
   } else {
-    await runOnce();
-    await closeDb();
+    if (!(await runOnce())) process.exitCode = 1;
   }
 } catch (error) {
   logger.error('worker failed', { message: error.message, stack: error.stack });
-  await closeDb();
   process.exitCode = 1;
-}
-
-async function closeDb() {
-  const database = db();
-  if (typeof database.end === 'function') {
-    await database.end();
-  } else if (typeof database.close === 'function') {
-    database.close();
+} finally {
+  try {
+    await closeDb();
+  } catch (error) {
+    logger.error('worker database close failed', { message: error.message });
+    process.exitCode = 1;
   }
 }

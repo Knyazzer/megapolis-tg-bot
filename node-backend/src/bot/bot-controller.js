@@ -22,6 +22,7 @@ import {
   inlineKeyboard,
   mainMenuKeyboard,
   phoneKeyboard,
+  promoCodeKeyboard,
   removeKeyboard,
   startRegistrationKeyboard,
 } from './keyboards.js';
@@ -29,8 +30,9 @@ import {
 const ACTIVE_OFFLINE_STATUSES = new Set(['pending', 'approved', 'visited']);
 
 export class BotController {
-  constructor({ telegram }) {
+  constructor({ telegram, throwErrors = false }) {
     this.telegram = telegram;
+    this.throwErrors = throwErrors;
     this.outboundTelegram = new TelegramClient();
     this.people = new PeopleRepository();
     this.events = new EventsRepository();
@@ -54,6 +56,7 @@ export class BotController {
       }
     } catch (error) {
       logger.error('bot error', { message: error.message, stack: error.stack });
+      if (this.throwErrors) throw error;
     }
   }
 
@@ -92,8 +95,12 @@ export class BotController {
     }
 
     if (text === '/menu') {
-      await this.restoreCreativeBriefStateIfNeeded(person);
-      await this.sendMainMenu(chatId);
+      const menuPerson = await this.restoreCreativeBriefStateIfNeeded(person);
+      if (menuPerson.state === 'ask_promo_code') {
+        await this.sendPromoCodePrompt(chatId);
+      } else {
+        await this.sendMainMenu(chatId);
+      }
       return;
     }
 
@@ -197,23 +204,43 @@ export class BotController {
     }
 
     let person = await this.people.upsertFromTelegram(from);
-    if (this.shouldRestoreCreativeBriefForCallback(data)) {
+    if (this.shouldRestoreCreativeBriefForCallback(data) || person.state === 'awaiting_creative_brief:ask_promo_code') {
       person = await this.restoreCreativeBriefStateIfNeeded(person);
     }
 
     if (data === 'start_registration') {
+      if (profileComplete(person)) {
+        await this.sendMainMenu(chatId);
+        return;
+      }
+      if (person.consent_accepted_at) {
+        await this.sendCurrentProfilePrompt(chatId, person);
+        return;
+      }
       await this.people.setState(person.id, 'awaiting_consent');
       await this.sendConsent(chatId);
       return;
     }
 
     if (data === 'consent_accept') {
+      if (profileComplete(person)) {
+        await this.sendMainMenu(chatId);
+        return;
+      }
+      if (person.consent_accepted_at && !['new', 'awaiting_consent'].includes(person.state)) {
+        await this.sendCurrentProfilePrompt(chatId, person);
+        return;
+      }
       await this.acceptConsentAndAskName(chatId, person);
       return;
     }
 
     if (data === 'main_menu') {
-      await this.sendMainMenu(chatId);
+      if (person.state === 'ask_promo_code') {
+        await this.sendPromoCodePrompt(chatId);
+      } else {
+        await this.sendMainMenu(chatId);
+      }
       return;
     }
 
@@ -383,26 +410,26 @@ export class BotController {
 
     if (state === 'ask_name') {
       if (text.length < 2) {
-        await this.telegram.sendMessage(chatId, '<b>Анкета, шаг 1 из 5</b>\n\nНапишите, пожалуйста, имя и фамилию текстом, чтобы мы корректно оформили регистрацию.', removeKeyboard());
+        await this.telegram.sendMessage(chatId, '<b>Анкета, шаг 1 из 6</b>\n\nНапишите, пожалуйста, имя и фамилию текстом, чтобы мы корректно оформили регистрацию.', removeKeyboard());
         return;
       }
       await this.people.updateFields(person.id, { full_name: text });
       await this.people.setState(person.id, 'ask_company');
-      await this.telegram.sendMessage(chatId, '<b>Шаг 2 из 5</b>\n\nИз какой вы компании?', removeKeyboard());
+      await this.telegram.sendMessage(chatId, '<b>Шаг 2 из 6</b>\n\nИз какой вы компании?', removeKeyboard());
       return;
     }
 
     if (state === 'ask_company') {
       await this.people.updateFields(person.id, { company: text });
       await this.people.setState(person.id, 'ask_position');
-      await this.telegram.sendMessage(chatId, '<b>Шаг 3 из 5</b>\n\nА какая у вас должность?', removeKeyboard());
+      await this.telegram.sendMessage(chatId, '<b>Шаг 3 из 6</b>\n\nА какая у вас должность?', removeKeyboard());
       return;
     }
 
     if (state === 'ask_position') {
       await this.people.updateFields(person.id, { position_title: text });
       await this.people.setState(person.id, 'ask_phone');
-      await this.telegram.sendMessage(chatId, '<b>Шаг 4 из 5</b>\n\nПоделитесь, пожалуйста, номером телефона. Можно отправить его кнопкой ниже.', phoneKeyboard());
+      await this.telegram.sendMessage(chatId, '<b>Шаг 4 из 6</b>\n\nПоделитесь, пожалуйста, номером телефона. Можно отправить его кнопкой ниже.', phoneKeyboard());
       return;
     }
 
@@ -419,7 +446,7 @@ export class BotController {
       }
       await this.people.updateFields(person.id, { phone });
       await this.people.setState(person.id, 'ask_email');
-      await this.telegram.sendMessage(chatId, '<b>Шаг 5 из 5</b>\n\nИ последний шаг: напишите вашу почту.', removeKeyboard());
+      await this.telegram.sendMessage(chatId, '<b>Шаг 5 из 6</b>\n\nНапишите вашу почту.', removeKeyboard());
       return;
     }
 
@@ -429,6 +456,22 @@ export class BotController {
         return;
       }
       await this.people.updateFields(person.id, { email: text.toLowerCase() });
+      await this.people.setState(person.id, 'ask_promo_code');
+      await this.sendPromoCodePrompt(chatId);
+      return;
+    }
+
+    if (state === 'ask_promo_code') {
+      const skipped = text === 'Пропустить';
+      if (!skipped && (!text || [...text].length > 128)) {
+        await this.telegram.sendMessage(
+          chatId,
+          'Введите промокод текстом (до 128 символов) или нажмите «Пропустить».',
+          promoCodeKeyboard(),
+        );
+        return;
+      }
+      await this.people.updateFields(person.id, { promo_code: skipped ? null : text });
       await this.people.setState(person.id, 'registered');
       await this.telegram.sendMessage(chatId, '<b>Готово, спасибо!</b> ✨\n\nАнкета собрана. Теперь можно выбрать мероприятие.', eventsMenuKeyboard());
       return;
@@ -465,7 +508,20 @@ export class BotController {
       return;
     }
 
+    if (state === 'ask_promo_code') {
+      await this.sendPromoCodePrompt(chatId);
+      return;
+    }
+
     await this.sendWelcome(chatId);
+  }
+
+  async sendPromoCodePrompt(chatId) {
+    await this.telegram.sendMessage(
+      chatId,
+      '<b>Шаг 6 из 6 — промокод</b>\n\nЕсли у вас есть промокод, введите его. Если нет — нажмите «Пропустить».',
+      promoCodeKeyboard(),
+    );
   }
 
   async sendWelcomeOrMenu(chatId, person) {
@@ -1203,6 +1259,11 @@ export class BotController {
       return true;
     }
 
+    if (person.state === 'ask_promo_code') {
+      await this.sendPromoCodePrompt(chatId);
+      return false;
+    }
+
     await this.telegram.sendMessage(
       chatId,
       '<b>Сначала давайте познакомимся.</b>\n\nТак мы корректно оформим регистрацию и не потеряем вас в списке гостей.',
@@ -1362,6 +1423,7 @@ export class BotController {
       });
     } catch (error) {
       logger.warn('failed to record incoming chat message', { personId: person.id, message: error.message });
+      if (this.throwErrors) throw error;
     }
   }
 
