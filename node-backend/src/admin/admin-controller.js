@@ -3013,8 +3013,9 @@ export class AdminController {
 
   eventLocationWidget(event) {
     return `<div class="event-location-widget" data-event-location-widget data-map-tile-url="${h(config.maps.tileUrl)}">
+      <label>Адрес для гостей<input type="text" name="address" value="${h(event.address ?? '')}" maxlength="500" placeholder="Москва, Знаменка, 13с1, этаж 7, офис 25" data-location-address></label>
       <div class="event-location-address">
-        <label>Адрес<input type="text" name="address" value="${h(event.address ?? '')}" data-location-address></label>
+        <label>Здание на карте<input type="text" maxlength="500" placeholder="Город, улица, дом" data-location-query></label>
         <button class="button" type="button" data-location-geocode>Найти на карте</button>
       </div>
       <input type="hidden" name="venue_lat" value="${h(event.venue_lat ?? '')}">

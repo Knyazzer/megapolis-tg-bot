@@ -7,7 +7,7 @@ const source = readFileSync(new URL('../public/assets/admin.js', import.meta.url
 const widgetSource = source.slice(source.indexOf("  var locationWidget ="), source.indexOf('  function initRegistrationDetailsModal()'));
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function widget() {
+function widget(savedAddress = '') {
   function element(value = '') {
     return {
       value, hidden: false, disabled: false, handlers: {},
@@ -17,7 +17,8 @@ function widget() {
     };
   }
   const form = element();
-  const address = Object.assign(element(), { form });
+  const address = Object.assign(element(savedAddress), { form });
+  const query = element();
   const lat = element();
   const lng = element();
   const button = element();
@@ -25,6 +26,7 @@ function widget() {
   const status = element();
   const elements = {
     '[data-location-address]': address,
+    '[data-location-query]': query,
     'input[name="venue_lat"]': lat,
     'input[name="venue_lng"]': lng,
     '[data-location-geocode]': button,
@@ -57,7 +59,7 @@ function widget() {
     },
   };
   vm.runInNewContext(widgetSource, context);
-  return { address, lat, lng, button, status, map, form, requests };
+  return { address, query, lat, lng, button, status, map, form, requests };
 }
 
 function reply(request, place) {
@@ -79,6 +81,7 @@ test('lookup keeps manual address details and saves coordinates; stale responses
   const w = widget();
   await flush();
   w.address.value = 'Moscow, test venue, office 25';
+  w.address.handlers.input();
   w.button.handlers.click();
   let prevented = false;
   w.form.handlers.submit({ preventDefault() { prevented = true; } });
@@ -99,15 +102,55 @@ test('lookup keeps manual address details and saves coordinates; stale responses
   assert.equal(w.lng.value, '');
 });
 
-test('clicking the map replaces the old address with the selected point address', async () => {
+test('clicking the map preserves the full guest address while updating the building', async () => {
   const w = widget();
   await flush();
-  w.address.value = 'Old venue';
+  w.address.value = 'Moscow, Znamenka 13s1, floor 7, office 25';
   w.map.handlers.click({ latlng: { lat: 55.75, lng: 37.61 } });
-  assert.equal(w.address.value, '');
+  assert.equal(w.address.value, 'Moscow, Znamenka 13s1, floor 7, office 25');
   reply(w.requests[0], { lat: 55.749, lng: 37.609, address: 'Selected venue' });
   await flush();
-  assert.equal(w.address.value, 'Selected venue');
+  assert.equal(w.address.value, 'Moscow, Znamenka 13s1, floor 7, office 25');
+  assert.equal(w.query.value, 'Selected venue');
   assert.equal(w.lat.value, '55.75');
   assert.equal(w.lng.value, '37.61');
+});
+
+test('the building query omits floor and office; adding details preserves the selected coordinates', async () => {
+  const address = 'Москва, Знаменка 13с1';
+  const w = widget(address);
+  await flush();
+  w.button.handlers.click();
+  assert.equal(new URL(w.requests[0].url, 'http://localhost').searchParams.get('q'), address);
+  reply(w.requests[0], { lat: 55.75, lng: 37.61, address: 'Building' });
+  await flush();
+  w.address.value = address + ', этаж 7, офис 25';
+  w.address.handlers.input();
+  assert.equal(w.query.value, address);
+  assert.equal(w.lat.value, '55.75');
+  assert.equal(w.lng.value, '37.61');
+  const reopened = widget(w.address.value);
+  await flush();
+  assert.equal(reopened.query.value, address);
+  assert.equal(reopened.address.value, address + ', этаж 7, офис 25');
+});
+
+test('a map lookup fills an empty guest address without replacing details entered while waiting', async () => {
+  const w = widget();
+  await flush();
+  w.query.value = 'Building';
+  w.query.handlers.input();
+  w.button.handlers.click();
+  reply(w.requests[0], { lat: 55.75, lng: 37.61, address: 'Found building' });
+  await flush();
+  assert.equal(w.address.value, 'Found building');
+
+  const pending = widget();
+  await flush();
+  pending.map.handlers.click({ latlng: { lat: 55.75, lng: 37.61 } });
+  pending.address.value = 'Москва, Знаменка 13с1, этаж 7, офис 25';
+  pending.address.handlers.input();
+  reply(pending.requests[0], { lat: 55.75, lng: 37.61, address: 'Building only' });
+  await flush();
+  assert.equal(pending.address.value, 'Москва, Знаменка 13с1, этаж 7, офис 25');
 });

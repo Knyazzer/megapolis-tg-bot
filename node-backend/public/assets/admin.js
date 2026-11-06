@@ -974,12 +974,13 @@
     }
 
     var addressInput = locationWidget.querySelector('[data-location-address]');
+    var queryInput = locationWidget.querySelector('[data-location-query]');
     var latInput = locationWidget.querySelector('input[name="venue_lat"]');
     var lngInput = locationWidget.querySelector('input[name="venue_lng"]');
     var geocodeButton = locationWidget.querySelector('[data-location-geocode]');
     var mapNode = locationWidget.querySelector('[data-location-map]');
     var status = locationWidget.querySelector('[data-location-status]');
-    if (!addressInput || !latInput || !lngInput || !mapNode) {
+    if (!addressInput || !queryInput || !latInput || !lngInput || !mapNode) {
       return;
     }
     var map = null;
@@ -988,6 +989,12 @@
     var lookupController = null;
     var lookupPending = false;
     var mapFailed = false;
+    var previousBuilding = buildingAddress(addressInput.value);
+    queryInput.value = previousBuilding;
+
+    function buildingAddress(address) {
+      return String(address || '').split(/(?:,\s*|\n)(?:(?:\d+\s*[-йя]?\s*)?этаж|офис|оф\.|кабинет|каб\.|вход|подъезд|помещение|комната|floor|office)/i)[0].trim();
+    }
 
     function setStatus(text, isError) {
       if (!status) {
@@ -1039,6 +1046,7 @@
       cancelLookup();
       var version = requestVersion;
       var originalAddress = addressInput.value;
+      var originalQuery = queryInput.value;
       lookupController = new AbortController();
       lookupPending = true;
       if (geocodeButton) geocodeButton.disabled = true;
@@ -1053,12 +1061,16 @@
           return data.place;
         });
       }).then(function (place) {
-        if (version !== requestVersion || addressInput.value !== originalAddress) return;
+        if (version !== requestVersion || queryInput.value !== originalQuery) return;
         if (!place) {
           setStatus(reverse ? 'Точка выбрана. Введите адрес вручную.' : 'Адрес не найден. Уточните город, улицу и дом.', true);
           return;
         }
-        if (reverse && place.address) addressInput.value = place.address;
+        if (reverse && place.address) queryInput.value = place.address;
+        if (!originalAddress.trim() && !addressInput.value.trim() && place.address) {
+          addressInput.value = place.address;
+          previousBuilding = buildingAddress(place.address);
+        }
         if (!reverse) setPoint(place.lat, place.lng);
         setStatus((mapFailed ? 'Карта временно недоступна. ' : '')
           + 'На карте: ' + place.address + '. Проверьте точку и сохраните мероприятие.');
@@ -1075,33 +1087,44 @@
 
     function selectPoint(lat, lng) {
       setPoint(lat, lng);
-      addressInput.value = '';
       lookup(new URLSearchParams({ lat: String(lat), lng: String(lng) }), true);
     }
 
     function geocodeAddress() {
-      var query = String(addressInput.value || '').trim();
+      var query = String(queryInput.value || '').trim();
       if (query.length < 3) {
         setStatus('Укажите город, улицу и дом.', true);
-        addressInput.focus();
+        queryInput.focus();
         return;
       }
       lookup(new URLSearchParams({ q: query }), false);
     }
 
     if (geocodeButton) geocodeButton.addEventListener('click', geocodeAddress);
-    addressInput.addEventListener('keydown', function (event) {
+    queryInput.addEventListener('keydown', function (event) {
       if (event.key === 'Enter') {
         event.preventDefault();
         geocodeAddress();
       }
     });
-    addressInput.addEventListener('input', function () {
+    function clearPoint() {
       cancelLookup();
       latInput.value = '';
       lngInput.value = '';
       if (marker && map) { map.removeLayer(marker); marker = null; }
-      setStatus('Адрес изменён. Можно найти его на карте или сохранить вручную.');
+    }
+    queryInput.addEventListener('input', function () {
+      clearPoint();
+      setStatus('Здание изменено. Выберите новую точку на карте.');
+    });
+    addressInput.addEventListener('input', function () {
+      var building = buildingAddress(addressInput.value);
+      if (queryInput.value === previousBuilding && building !== previousBuilding) {
+        queryInput.value = building;
+        clearPoint();
+      }
+      previousBuilding = building;
+      setStatus('Полный адрес для гостей обновлён. Сохраните мероприятие.');
     });
     if (addressInput.form) {
       addressInput.form.addEventListener('submit', function (event) {
