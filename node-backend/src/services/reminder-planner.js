@@ -76,6 +76,11 @@ export class ReminderPlanner {
           sent_at = NULL,
           failed_at = NULL,
           error = NULL,
+          attempt_count = 0,
+          next_attempt_at = NULL,
+          delivery_step = 0,
+          lock_token = NULL,
+          locked_until = NULL,
           updated_at = excluded.updated_at`,
         {
           registrationId: registration.id,
@@ -101,6 +106,11 @@ export class ReminderPlanner {
         sent_at = NULL,
         failed_at = NULL,
         error = NULL,
+        attempt_count = 0,
+        next_attempt_at = NULL,
+        delivery_step = 0,
+        lock_token = NULL,
+        locked_until = NULL,
         updated_at = VALUES(updated_at)`,
       {
         registrationId: registration.id,
@@ -122,6 +132,8 @@ export class ReminderPlanner {
     await query(
       `UPDATE scheduled_messages
        SET sent_at = :now,
+           lock_token = NULL,
+           locked_until = NULL,
            updated_at = :now
        WHERE registration_id = :registrationId
          AND sent_at IS NULL

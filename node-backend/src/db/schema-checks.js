@@ -2,6 +2,13 @@ import { execute, isSqlite, queryOne } from './mysql.js';
 
 const REQUIRED_TABLES = [
   [
+    'message_queue_control',
+    `CREATE TABLE IF NOT EXISTS message_queue_control (
+      id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+      paused_until DATETIME NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  ],
+  [
     'chat_messages',
     `CREATE TABLE IF NOT EXISTS chat_messages (
       id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -88,6 +95,7 @@ const REQUIRED_COLUMNS = [
   ['people', 'position_title', 'VARCHAR(255) NULL AFTER company'],
   ['people', 'phone', 'VARCHAR(64) NULL AFTER position_title'],
   ['people', 'email', 'VARCHAR(255) NULL AFTER phone'],
+  ['people', 'promo_code', 'VARCHAR(128) NULL AFTER email'],
   ['people', 'consent_accepted_at', 'DATETIME NULL AFTER email'],
   ['people', 'state', "VARCHAR(64) NOT NULL DEFAULT 'new' AFTER consent_accepted_at"],
   ['people', 'state_payload', 'JSON NULL AFTER state'],
@@ -169,6 +177,11 @@ const REQUIRED_COLUMNS = [
   ['scheduled_messages', 'error', 'TEXT NULL AFTER failed_at'],
   ['scheduled_messages', 'created_at', 'DATETIME NULL AFTER error'],
   ['scheduled_messages', 'updated_at', 'DATETIME NULL AFTER created_at'],
+  ['scheduled_messages', 'attempt_count', 'INT UNSIGNED NOT NULL DEFAULT 0'],
+  ['scheduled_messages', 'next_attempt_at', 'DATETIME NULL'],
+  ['scheduled_messages', 'lock_token', 'VARCHAR(36) NULL'],
+  ['scheduled_messages', 'locked_until', 'DATETIME NULL'],
+  ['scheduled_messages', 'delivery_step', 'INT UNSIGNED NOT NULL DEFAULT 0'],
 
   ['broadcast_campaigns', 'content_type', "ENUM('text','video_note','photo','video') NOT NULL DEFAULT 'text' AFTER event_id"],
   ['broadcast_campaigns', 'body', 'TEXT NULL AFTER content_type'],
@@ -186,6 +199,11 @@ const REQUIRED_COLUMNS = [
   ['broadcast_messages', 'error', 'TEXT NULL AFTER sent_at'],
   ['broadcast_messages', 'created_at', 'DATETIME NULL AFTER error'],
   ['broadcast_messages', 'updated_at', 'DATETIME NULL AFTER created_at'],
+  ['broadcast_messages', 'attempt_count', 'INT UNSIGNED NOT NULL DEFAULT 0'],
+  ['broadcast_messages', 'next_attempt_at', 'DATETIME NULL'],
+  ['broadcast_messages', 'lock_token', 'VARCHAR(36) NULL'],
+  ['broadcast_messages', 'locked_until', 'DATETIME NULL'],
+  ['broadcast_messages', 'delivery_step', 'INT UNSIGNED NOT NULL DEFAULT 0'],
 
   ['chat_messages', 'telegram_id', 'BIGINT NOT NULL AFTER person_id'],
   ['chat_messages', 'direction', "ENUM('in','out') NOT NULL AFTER telegram_id"],

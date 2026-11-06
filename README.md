@@ -23,7 +23,9 @@ Node.js/MySQL-проект для Telegram-бота регистрации на 
 ```bash
 cp .env.docker.example .env
 nano .env
-docker compose up -d --build
+docker compose build
+docker compose run --rm app npm run migrate
+docker compose up -d
 ```
 
 Подробно: `docs/DOCKER_DEPLOY.md`.
@@ -36,6 +38,7 @@ npm ci
 cp .env.example .env
 nano .env
 npm run check
+npm run migrate
 npm start
 ```
 
@@ -54,6 +57,11 @@ curl -s "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
 ```
 
 Полная инструкция по Nginx/systemd лежит в `node-backend/README.md`.
+
+Миграции выполняются отдельно от запуска процессов. При ошибке БД или неполной
+схеме HTTP-сервер остаётся жив (`/live`), а `/health` возвращает 503 до восстановления.
+Порядок будущего обновления описан в `docs/DEVELOPMENT.md` и разделе «Запуск и миграции»
+в `node-backend/README.md`.
 
 ## Важное по секретам
 

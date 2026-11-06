@@ -7,15 +7,17 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "start": "node scripts/migrate.js && node src/server.js",
+    "start": "node src/server.js",
     "local": "NODE_ENV=development HOST=127.0.0.1 PORT=4199 APP_URL=http://127.0.0.1:4199 DB_CONNECTION=sqlite DB_DATABASE=./data/local.sqlite TELEGRAM_DRY_RUN=true TELEGRAM_WEBHOOK_SECRET=test FACECAST_DEMO_MODE=true node src/server.js",
     "local:watch": "NODE_ENV=development HOST=127.0.0.1 PORT=4199 APP_URL=http://127.0.0.1:4199 DB_CONNECTION=sqlite DB_DATABASE=./data/local.sqlite TELEGRAM_DRY_RUN=true TELEGRAM_WEBHOOK_SECRET=test FACECAST_DEMO_MODE=true node --watch src/server.js",
     "dev": "node --watch src/server.js",
-    "worker": "node scripts/migrate.js && node src/worker.js",
-    "worker:loop": "node scripts/migrate.js && node src/worker.js --loop",
+    "worker": "node src/worker.js",
+    "worker:loop": "node src/worker.js --loop",
+    "migrate": "node scripts/migrate.js",
     "db:demo": "NODE_ENV=development DB_CONNECTION=sqlite DB_DATABASE=./data/local.sqlite FACECAST_DEMO_MODE=true node scripts/seed-demo.js",
     "hash-password": "node scripts/hash-password.js",
-    "check": "node scripts/check-syntax.js"
+    "check": "node scripts/check-syntax.js",
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

@@ -1,7 +1,13 @@
 import { query, queryOne } from '../db/mysql.js';
 import { ChatRepository } from '../repositories/chat-repository.js';
+import { MessageQueueRepository } from '../repositories/message-queue-repository.js';
 import { FacecastClient } from '../services/facecast-client.js';
-import { isTelegramRetryableError, TelegramClient } from '../services/telegram-client.js';
+import {
+  isTelegramRetryableError,
+  splitTelegramText,
+  TelegramClient,
+  telegramRetryDelayMs,
+} from '../services/telegram-client.js';
 import {
   dateShortSafe,
   formatSqlDate,
@@ -17,15 +23,17 @@ import { logger } from '../utils/logger.js';
 
 const facecast = new FacecastClient();
 const chat = new ChatRepository();
-const RETRYABLE_SCHEDULED_TYPES = new Set(['offline_approved']);
-const MAX_TRANSACTIONAL_RETRY_ATTEMPTS = 6;
-const TRANSACTIONAL_RETRY_DELAY_MS = 5 * 60 * 1000;
+const queue = new MessageQueueRepository();
+const MAX_DELIVERY_ATTEMPTS = 6;
 
-export async function processDueMessages({ limit = 50, broadcastCampaignId = null } = {}) {
-  const telegram = new TelegramClient();
+export async function processDueMessages({
+  limit = 50,
+  broadcastCampaignId = null,
+  telegram = new TelegramClient({ maxAttempts: 1 }),
+} = {}) {
   const safeLimit = sqlLimit(limit);
   const scheduled = broadcastCampaignId
-    ? { picked: 0, sent: 0, skipped: 0, failed: 0 }
+    ? { picked: 0, sent: 0, skipped: 0, failed: 0, retried: 0 }
     : await processScheduledMessages(telegram, safeLimit);
   const broadcasts = await processBroadcastMessages(telegram, Math.max(safeLimit, 60), broadcastCampaignId);
   const facecastStats = broadcastCampaignId
@@ -99,8 +107,48 @@ async function syncFacecastWatchStats(limit) {
 }
 
 async function processScheduledMessages(telegram, limit) {
+  const rows = await scheduledRows(limit);
+  const stats = { picked: 0, sent: 0, skipped: 0, failed: 0, retried: 0 };
+  for (const candidate of rows) {
+    const token = await queue.claim('scheduled', candidate.id);
+    if (!token) continue;
+    stats.picked += 1;
+    // The batch is only a list of candidates. Reload after the atomic claim.
+    const [row] = await scheduledRows(1, candidate.id, token);
+    if (!row) {
+      await queue.release('scheduled', candidate.id, token);
+      stats.skipped += 1;
+      continue;
+    }
+    if (scheduledMessageIsStale(row)) {
+      await queue.complete('scheduled', row.id, token);
+      stats.skipped += 1;
+      continue;
+    }
+
+    let text;
+    let steps;
+    try {
+      const payload = scheduledMessagePayload(row);
+      text = payload[0];
+      steps = textSteps(telegram, row.telegram_id, text, payload[1]);
+    } catch (error) {
+      await queue.fail('scheduled', row.id, token, error);
+      stats.failed += 1;
+      continue;
+    }
+    const outcome = await deliverSteps('scheduled', row, token, steps);
+    stats[outcome.status] += 1;
+    if (outcome.status === 'sent' || outcome.status === 'failed') {
+      await recordScheduledOutgoing(row, text, outcome.status, outcome.error);
+    }
+  }
+  return stats;
+}
+
+async function scheduledRows(limit, id = null, token = null) {
   const rowLimit = sqlLimit(limit);
-  const rows = await query(
+  return query(
     `SELECT
        sm.*,
        p.id AS person_id,
@@ -131,106 +179,135 @@ async function processScheduledMessages(telegram, limit) {
      WHERE sm.sent_at IS NULL
        AND sm.failed_at IS NULL
        AND sm.send_at <= :now
+       AND (sm.next_attempt_at IS NULL OR sm.next_attempt_at <= :now)
+       ${id === null ? 'AND (sm.locked_until IS NULL OR sm.locked_until <= :now)' : 'AND sm.id = :id AND sm.lock_token = :token'}
      ORDER BY sm.send_at ASC
      LIMIT ${rowLimit}`,
-    { now: nowSql() },
+    { now: nowSql(), ...(id === null ? {} : { id, token }) },
   );
-
-  let sent = 0;
-  let skipped = 0;
-  let failed = 0;
-
-  for (const row of rows) {
-    let text = '';
-    try {
-      if (scheduledMessageIsStale(row)) {
-        await markScheduledSent(row.id);
-        skipped += 1;
-        continue;
-      }
-
-      const [payloadText, keyboard] = scheduledMessagePayload(row);
-      text = payloadText;
-      await telegram.sendMessage(Number(row.telegram_id), text, keyboard);
-      await recordScheduledOutgoing(row, text, 'sent');
-      await markScheduledSent(row.id);
-      sent += 1;
-    } catch (error) {
-      if (scheduledMessageShouldRetry(row, error)) {
-        await rescheduleScheduledRetry(row, error);
-      } else {
-        await recordScheduledOutgoing(row, text, 'failed', error);
-        await markScheduledFailed(row.id, error);
-      }
-      failed += 1;
-      logger.warn('scheduled message failed', { id: row.id, message: error.message });
-    }
-  }
-
-  return { picked: rows.length, sent, skipped, failed };
 }
 
 async function processBroadcastMessages(telegram, limit, campaignId = null) {
+  const rows = await broadcastRows(limit, campaignId);
+  const stats = { picked: 0, sent: 0, skipped: 0, failed: 0, retried: 0 };
+  const cachedMediaFileIds = new Map();
+  const cachedMediaUploads = new Map();
+  for (const candidate of rows) {
+    const token = await queue.claim('broadcast', candidate.id);
+    if (!token) continue;
+    stats.picked += 1;
+    const [row] = await broadcastRows(1, campaignId, candidate.id, token);
+    if (!row) {
+      await queue.release('broadcast', candidate.id, token);
+      stats.skipped += 1;
+      continue;
+    }
+    let steps;
+    try {
+      steps = await broadcastSteps(telegram, row, cachedMediaFileIds, cachedMediaUploads);
+    } catch (error) {
+      await queue.fail('broadcast', row.id, token, error);
+      stats.failed += 1;
+      continue;
+    }
+    const outcome = await deliverSteps('broadcast', row, token, steps);
+    stats[outcome.status] += 1;
+  }
+  await refreshCampaignStatuses(rows);
+  return stats;
+}
+
+async function broadcastRows(limit, campaignId = null, id = null, token = null) {
   const rowLimit = sqlLimit(limit);
   const campaignFilter = Number(campaignId || 0) > 0 ? 'AND bm.campaign_id = :campaignId' : '';
-  const rows = await query(
+  return query(
     `SELECT bm.*, c.audience, c.event_id, c.content_type, c.body, c.media_file_id, c.media_mime, c.media_name, c.media_size, c.id AS campaign_id
      FROM broadcast_messages bm
      JOIN broadcast_campaigns c ON c.id = bm.campaign_id
      WHERE bm.status = 'queued'
        AND c.status != 'cancelled'
+       AND (bm.next_attempt_at IS NULL OR bm.next_attempt_at <= :now)
+       ${id === null ? 'AND (bm.locked_until IS NULL OR bm.locked_until <= :now)' : 'AND bm.id = :id AND bm.lock_token = :token'}
        ${campaignFilter}
      ORDER BY bm.id ASC
      LIMIT ${rowLimit}`,
-    campaignFilter ? { campaignId: Number(campaignId) } : {},
+    { now: nowSql(), ...(campaignFilter ? { campaignId: Number(campaignId) } : {}), ...(id === null ? {} : { id, token }) },
   );
+}
 
-  let sent = 0;
-  let failed = 0;
-  const cachedMediaFileIds = new Map();
-  const cachedMediaUploads = new Map();
+function textSteps(telegram, chatId, text, replyMarkup) {
+  const chunks = splitTelegramText(text);
+  return chunks.map((chunk, index) => ({
+    send: () => telegram.sendMessage(Number(chatId), chunk, index === chunks.length - 1 ? replyMarkup : {}),
+  }));
+}
 
-  for (const row of rows) {
-    try {
-      let telegramResult = null;
-      const media = await broadcastMedia(row, cachedMediaFileIds, cachedMediaUploads);
-      const replyMarkup = broadcastReplyMarkup(row);
-      const hasBody = String(row.body || '').trim() !== '';
-      if (row.content_type === 'video_note' && media) {
-        telegramResult = await telegram.sendVideoNote(Number(row.telegram_id), media, hasBody ? {} : replyMarkup);
-      } else if (row.content_type === 'photo' && media) {
-        const caption = telegramMediaCaption(row.body);
-        telegramResult = await telegram.sendPhoto(Number(row.telegram_id), media, caption, caption || !hasBody ? replyMarkup : {});
-        if (caption) row.body = '';
-      } else if (row.content_type === 'video' && media) {
-        const caption = telegramMediaCaption(row.body);
-        telegramResult = await telegram.sendVideo(Number(row.telegram_id), media, caption, caption || !hasBody ? replyMarkup : {});
-        if (caption) row.body = '';
-      }
-
-      await rememberTelegramFileId(row, telegramResult, cachedMediaFileIds);
-
-      if (String(row.body || '').trim() !== '') {
-        await telegram.sendMessage(Number(row.telegram_id), String(row.body), replyMarkup);
-      }
-
-      await query(
-        "UPDATE broadcast_messages SET status = 'sent', sent_at = :now, updated_at = :now WHERE id = :id",
-        { id: row.id, now: nowSql() },
-      );
-      sent += 1;
-    } catch (error) {
-      await query(
-        "UPDATE broadcast_messages SET status = 'failed', error = :error, updated_at = :now WHERE id = :id",
-        { id: row.id, error: error.message, now: nowSql() },
-      );
-      failed += 1;
-      logger.warn('broadcast message failed', { id: row.id, message: error.message });
-    }
+async function broadcastSteps(telegram, row, cachedMediaFileIds, cachedMediaUploads) {
+  const steps = [];
+  const replyMarkup = broadcastReplyMarkup(row);
+  let body = String(row.body || '');
+  if (['photo', 'video', 'video_note'].includes(row.content_type)) {
+    const caption = row.content_type === 'video_note' ? '' : telegramMediaCaption(body);
+    const mediaMarkup = caption || !body.trim() ? replyMarkup : {};
+    steps.push({
+      async send() {
+        const media = await broadcastMedia(row, cachedMediaFileIds, cachedMediaUploads);
+        if (!media) throw new Error('Broadcast media is missing');
+        if (row.content_type === 'photo') return telegram.sendPhoto(Number(row.telegram_id), media, caption, mediaMarkup);
+        if (row.content_type === 'video') return telegram.sendVideo(Number(row.telegram_id), media, caption, mediaMarkup);
+        return telegram.sendVideoNote(Number(row.telegram_id), media, mediaMarkup);
+      },
+      async afterCheckpoint(result) {
+        // File ID caching is an optimisation, never a reason to repeat delivered media.
+        try {
+          await rememberTelegramFileId(row, result, cachedMediaFileIds);
+        } catch (error) {
+          logger.warn('broadcast media cache failed', { id: row.id, message: error.message });
+        }
+      },
+    });
+    if (caption) body = '';
   }
+  if (body.trim()) steps.push(...textSteps(telegram, row.telegram_id, body, replyMarkup));
+  return steps;
+}
 
-  await refreshCampaignStatuses(rows);
-  return { picked: rows.length, sent, failed };
+async function deliverSteps(kind, row, token, steps) {
+  if (Number(row.delivery_step || 0) < steps.length && Number(row.attempt_count) > MAX_DELIVERY_ATTEMPTS) {
+    const error = new Error('Delivery attempts exhausted');
+    await queue.fail(kind, row.id, token, error);
+    return { status: 'failed', error };
+  }
+  for (let step = Number(row.delivery_step || 0); step < steps.length; step += 1) {
+    if (!(await queue.renew(kind, row.id, token))) {
+      await queue.release(kind, row.id, token);
+      return { status: 'skipped' };
+    }
+    let result;
+    try {
+      result = await steps[step].send();
+    } catch (error) {
+      const rateLimited = error.errorCode === 429 || error.responseStatus === 429;
+      // SQL stores seconds: round up so truncation never shortens retry_after.
+      const retryAt = formatSqlDate(new Date(Math.ceil(
+        (Date.now() + telegramRetryDelayMs(error, row.attempt_count)) / 1000,
+      ) * 1000));
+      // Share Telegram's flood pause with the other queue and other processes.
+      if (rateLimited) await queue.deferPendingUntil(retryAt);
+      const retryable = isTelegramRetryableError(error) && row.attempt_count < MAX_DELIVERY_ATTEMPTS;
+      const updated = retryable
+        ? await queue.retry(kind, row.id, token, error, retryAt)
+        : await queue.fail(kind, row.id, token, error);
+      logger.warn('queued message delivery failed', { kind, id: row.id, attempt: row.attempt_count, retryable, message: error.message });
+      return { status: updated ? (retryable ? 'retried' : 'failed') : 'skipped', error };
+    }
+
+    // Keep DB errors outside the send catch: an acknowledged send must not be
+    // mistaken for a Telegram rejection and immediately resent.
+    if (!(await queue.checkpoint(kind, row.id, token, step + 1))) return { status: 'skipped' };
+    await steps[step].afterCheckpoint?.(result);
+  }
+  return { status: (await queue.complete(kind, row.id, token)) ? 'sent' : 'skipped' };
 }
 
 async function broadcastMedia(row, cachedMediaFileIds, cachedMediaUploads) {
@@ -501,20 +578,6 @@ function onlineKeyboard(registrationId, url) {
   return { inline_keyboard: buttons };
 }
 
-async function markScheduledSent(id) {
-  await query(
-    'UPDATE scheduled_messages SET sent_at = :now, updated_at = :now WHERE id = :id',
-    { id, now: nowSql() },
-  );
-}
-
-async function markScheduledFailed(id, error) {
-  await query(
-    'UPDATE scheduled_messages SET failed_at = :now, error = :error, updated_at = :now WHERE id = :id',
-    { id, error: error.message, now: nowSql() },
-  );
-}
-
 async function recordScheduledOutgoing(row, text, status, error = null) {
   if (String(row.type || '') !== 'offline_approved') {
     return;
@@ -542,43 +605,6 @@ async function recordScheduledOutgoing(row, text, status, error = null) {
       telegramId,
       message: recordError.message,
     });
-  }
-}
-
-function scheduledMessageShouldRetry(row, error) {
-  return RETRYABLE_SCHEDULED_TYPES.has(String(row.type || ''))
-    && isTelegramRetryableError(error)
-    && scheduledRetryAttempts(row) < MAX_TRANSACTIONAL_RETRY_ATTEMPTS;
-}
-
-async function rescheduleScheduledRetry(row, error) {
-  const attempts = scheduledRetryAttempts(row) + 1;
-  const retryAt = shiftDate(nowSql(), TRANSACTIONAL_RETRY_DELAY_MS);
-  await query(
-    `UPDATE scheduled_messages
-     SET send_at = :sendAt,
-         payload = :payload,
-         failed_at = NULL,
-         error = :error,
-         updated_at = :now
-     WHERE id = :id`,
-    {
-      id: row.id,
-      sendAt: formatSqlDate(retryAt),
-      payload: JSON.stringify({ attempts }),
-      error: error.message,
-      now: nowSql(),
-    },
-  );
-}
-
-function scheduledRetryAttempts(row) {
-  try {
-    const payload = JSON.parse(String(row.payload || '{}'));
-    const attempts = Number(payload?.attempts || 0);
-    return Number.isFinite(attempts) ? Math.max(0, attempts) : 0;
-  } catch {
-    return 0;
   }
 }
 
@@ -613,7 +639,7 @@ async function refreshCampaignStatuses(rows) {
       status = 'cancelled';
     }
     await query(
-      'UPDATE broadcast_campaigns SET status = :status, updated_at = :now WHERE id = :campaignId',
+      "UPDATE broadcast_campaigns SET status = :status, updated_at = :now WHERE id = :campaignId AND status != 'cancelled'",
       { campaignId, status, now: nowSql() },
     );
   }

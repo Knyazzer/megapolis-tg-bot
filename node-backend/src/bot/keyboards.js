@@ -52,6 +52,13 @@ export function phoneKeyboard() {
   });
 }
 
+export function promoCodeKeyboard() {
+  return replyKeyboard([[{ text: 'Пропустить' }]], {
+    one_time_keyboard: true,
+    input_field_placeholder: 'Введите промокод или пропустите шаг',
+  });
+}
+
 export function removeKeyboard() {
   return { remove_keyboard: true };
 }

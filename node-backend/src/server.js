@@ -6,8 +6,8 @@ import { config } from './config.js';
 import { AdminController } from './admin/admin-controller.js';
 import { loadSession } from './admin/admin-auth.js';
 import { BotController } from './bot/bot-controller.js';
-import { pingDb, queryOne } from './db/mysql.js';
-import { mysqlSchemaDiagnostics } from './db/schema-checks.js';
+import { queryOne } from './db/mysql.js';
+import { checkDatabaseReadiness } from './db/readiness.js';
 import { ChatRecordingTelegramClient } from './services/chat-recording-telegram-client.js';
 import { TelegramClient } from './services/telegram-client.js';
 import { h } from './utils/html.js';
@@ -29,6 +29,11 @@ const FORM_BODY_LIMIT = 60 * 1024 * 1024;
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url || '/', `http://${request.headers.host || '127.0.0.1'}`);
+
+    if (request.method === 'GET' && url.pathname === '/live') {
+      json(response, 200, { ok: true });
+      return;
+    }
 
     if (request.method === 'GET' && url.pathname.startsWith('/assets/')) {
       await handleStatic(response, url.pathname);
@@ -68,6 +73,10 @@ const server = createServer(async (request, response) => {
           throw error;
         }
       }
+      const action = String(form.action || url.searchParams.get('action') || '');
+      if (session.adminLoggedIn && !['login', 'logout'].includes(action)) {
+        if (!(await requireDatabaseReady(response))) return;
+      }
       const result = await new AdminController({ session, response }).handle({
         method: request.method,
         url,
@@ -91,7 +100,7 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(config.port, config.host, () => {
-  logger.info(`Node bot backend is listening on ${config.host}:${config.port}`);
+  logger.info(`Node bot backend is listening on ${config.host}:${server.address().port}`);
 });
 
 async function handleStatic(response, pathname) {
@@ -143,27 +152,31 @@ function handlePrivacy(response) {
 }
 
 async function handleHealth(response, url) {
+  const readiness = await checkDatabaseReadiness({ forceSchema: url.searchParams.get('schema') === '1' });
   const payload = {
-    ok: true,
+    ok: readiness.ok,
     time: new Date().toISOString(),
     node_env: config.nodeEnv,
     app_url: config.appUrl,
     telegram_reply_mode: config.telegram.replyMode,
     telegram_dry_run: config.telegram.dryRun,
     db: {
-      ok: false,
+      ...readiness.db,
       events: null,
     },
+    schema: url.searchParams.get('schema') === '1'
+      ? readiness.schema || { ok: false }
+      : { ok: Boolean(readiness.schema?.ok) },
   };
+  if (readiness.error) payload.error = readiness.error;
+  if (!readiness.ok) {
+    json(response, 503, payload);
+    return;
+  }
 
   try {
-    payload.db.ok = await pingDb();
     const row = await queryOne('SELECT COUNT(*) AS total FROM events');
     payload.db.events = Number(row?.total || 0);
-    if (url.searchParams.get('schema') === '1') {
-      payload.schema = await mysqlSchemaDiagnostics();
-      payload.ok = payload.ok && payload.schema.ok;
-    }
     if (url.searchParams.get('facecast') === '1') {
       const event = await queryOne(
         `SELECT id, title, facecast_event_id, facecast_url
@@ -194,10 +207,12 @@ async function handleHealth(response, url) {
     }
   } catch (error) {
     payload.ok = false;
+    payload.db.ok = false;
     payload.db.error = error.message;
+    payload.error = 'database_unavailable';
   }
 
-  if (url.searchParams.get('telegram') === '1') {
+  if (payload.ok && url.searchParams.get('telegram') === '1') {
     try {
       const result = await new TelegramClient().api('getMe', {});
       payload.telegram_api = { ok: true, username: result.result?.username || null };
@@ -207,7 +222,15 @@ async function handleHealth(response, url) {
     }
   }
 
-  json(response, payload.ok ? 200 : 500, payload);
+  json(response, payload.ok ? 200 : 503, payload);
+}
+
+async function requireDatabaseReady(response) {
+  const readiness = await checkDatabaseReadiness();
+  if (readiness.ok) return true;
+  response.setHeader('Retry-After', '5');
+  json(response, 503, { ok: false, error: 'Service temporarily unavailable' });
+  return false;
 }
 
 function facecastMissingSettings(event) {
@@ -239,6 +262,9 @@ async function handleTelegramWebhook(request, response) {
     }
   }
 
+  // Do not acknowledge an update that cannot be persisted. Telegram may retry.
+  if (!(await requireDatabaseReady(response))) return;
+
   const update = await readJsonBody(request);
   const chatId = extractChatId(update);
   const telegram = new ChatRecordingTelegramClient(new TelegramClient({
@@ -246,7 +272,7 @@ async function handleTelegramWebhook(request, response) {
     preferWebhookReply: config.telegram.replyMode === 'webhook',
   }));
 
-  await new BotController({ telegram }).handle(update);
+  await new BotController({ telegram, throwErrors: true }).handle(update);
 
   const webhookReply = telegram.consumeWebhookReply();
   if (webhookReply) {
